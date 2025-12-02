@@ -1,0 +1,20 @@
+# Core dependencies
+GitPython>=3.1.40
+
+# Optional dependencies for enhanced functionality
+# Uncomment if needed
+
+# For advanced reporting
+# pandas>=2.0.0
+# matplotlib>=3.7.0
+
+# For web interface (future enhancement)
+# flask>=3.0.0
+
+# Development dependencies
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Code quality
+pylint>=3.0.0
+black>=23.0.0
