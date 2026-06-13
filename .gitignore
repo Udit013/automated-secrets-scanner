@@ -33,3 +33,19 @@ evaluation_results.json
 # Test coverage
 .coverage
 htmlcov/
+.pytest_cache/
+
+# Environment & secrets
+.env
+backend/.env
+*.db
+*.db-shm
+*.db-wal
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/.env
+
+# Docker
+.dockerenv

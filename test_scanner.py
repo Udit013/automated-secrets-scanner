@@ -103,13 +103,11 @@ class TestSecretsScanner(unittest.TestCase):
         """Test AWS access key detection"""
         code = """
 # AWS Configuration
-AWS_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"
-AWS_SECRET_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+AWS_ACCESS_KEY = "AKIAV3WBCDEF4GHI7JKM"
         """
         matches = self.scanner.scan_string(code)
         self.assertGreater(len(matches), 0)
-        
-        # Check that AWS keys were detected
+
         types = [m.secret_type for m in matches]
         self.assertIn('AWS Access Key', types)
     
@@ -150,8 +148,8 @@ TOKEN = "${YOUR_TOKEN}"
         """Test scanning a file"""
         test_file = os.path.join(self.temp_dir, "test.py")
         with open(test_file, 'w') as f:
-            f.write('api_key = "AKIAIOSFODNN7EXAMPLE"\n')
-        
+            f.write('api_key = "AKIAV3WBCDEF4GHI7JKM"\n')
+
         matches = self.scanner.scan_file(test_file)
         self.assertGreater(len(matches), 0)
     
@@ -229,8 +227,8 @@ class TestDataFileHandling(unittest.TestCase):
         """Test scanning JSON configuration files"""
         config_file = os.path.join(self.temp_dir, "config.json")
         with open(config_file, 'w') as f:
-            f.write('{"aws_key": "AKIAIOSFODNN7EXAMPLE"}')
-        
+            f.write('{"aws_key": "AKIAV3WBCDEF4GHI7JKM"}')
+
         matches = self.scanner.scan_file(config_file)
         self.assertGreater(len(matches), 0)
     
@@ -248,8 +246,8 @@ class TestDataFileHandling(unittest.TestCase):
         """Test scanning .env files"""
         env_file = os.path.join(self.temp_dir, ".env")
         with open(env_file, 'w') as f:
-            f.write('API_KEY=AKIAIOSFODNN7EXAMPLE\n')
-        
+            f.write('API_KEY=AKIAV3WBCDEF4GHI7JKM\n')
+
         matches = self.scanner.scan_file(env_file)
         self.assertGreater(len(matches), 0)
 
