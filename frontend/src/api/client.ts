@@ -1,9 +1,22 @@
 import axios from 'axios'
 
+// In dev: proxy via Vite (/api → localhost:8000).
+// In production: VITE_API_URL must be set to the Render backend URL.
+const BASE = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api/v1`
+  : '/api/v1'
+
+export const API_BASE_URL = import.meta.env.VITE_API_URL || ''
+
 export const api = axios.create({
-  baseURL: '/api/v1',
+  baseURL: BASE,
   headers: { 'Content-Type': 'application/json' },
 })
+
+// Separate instance for root-level endpoints like /health
+const ROOT = import.meta.env.VITE_API_URL || ''
+export const rootApi = axios.create({ baseURL: ROOT })
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

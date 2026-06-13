@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { API_BASE_URL } from '../api/client'
 
 export interface WsMessage {
   event: 'started' | 'progress' | 'completed' | 'failed'
@@ -17,10 +18,18 @@ export function useWebSocket(scanId: string | null) {
   useEffect(() => {
     if (!scanId) return
 
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    // In dev, Vite proxies HTTP but not WS — connect directly to backend
-    const host = import.meta.env.DEV ? 'localhost:8000' : window.location.host
-    const url = `${protocol}://${host}/api/v1/scans/ws/${scanId}`
+    // In dev: connect directly to localhost:8000 (Vite can't proxy WS).
+    // In prod: connect to the Render backend URL from VITE_API_URL.
+    let wsBase: string
+    if (API_BASE_URL) {
+      // e.g. https://secrets-scanner-api.onrender.com → wss://...
+      wsBase = API_BASE_URL.replace(/^http/, 'ws')
+    } else {
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+      const host = import.meta.env.DEV ? 'localhost:8000' : window.location.host
+      wsBase = `${protocol}://${host}`
+    }
+    const url = `${wsBase}/api/v1/scans/ws/${scanId}`
 
     const ws = new WebSocket(url)
     wsRef.current = ws
