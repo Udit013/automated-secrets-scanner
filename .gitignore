@@ -49,3 +49,9 @@ frontend/.env
 
 # Docker
 .dockerenv
+
+# Claude Code
+.claude/
+
+# Virtual environments
+backend/.venv/
