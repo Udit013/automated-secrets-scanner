@@ -119,7 +119,7 @@ export function Dashboard() {
           <h2 className="text-sm font-semibold text-gray-400 mb-4">Top Secret Types</h2>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={typeData} layout="vertical">
-              <XAxis type="number" tick={{ fill: '#6b7280', fontSize: 11 }} />
+              <XAxis type="number" allowDecimals={false} tick={{ fill: '#6b7280', fontSize: 11 }} />
               <YAxis type="category" dataKey="name" width={180} tick={{ fill: '#9ca3af', fontSize: 11 }} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151' }}
