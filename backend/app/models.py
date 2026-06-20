@@ -48,6 +48,18 @@ class Finding(Base):
     remediation: Mapped[str] = mapped_column(Text, default="")
     is_in_history: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Exposure Risk Score (0-100) + transparent reasoning
+    risk_score: Mapped[int] = mapped_column(Integer, default=0)
+    risk_factors: Mapped[list | None] = mapped_column(JSON, nullable=True)  # ["Critical severity", ...]
+    occurrences: Mapped[int] = mapped_column(Integer, default=1)
+
+    # Secret lifecycle (populated when git history is scanned)
+    introduced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    exposure_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    commits_affected: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authors_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     scan: Mapped["Scan"] = relationship("Scan", back_populates="findings")
 
 

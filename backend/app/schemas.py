@@ -18,6 +18,16 @@ class FindingOut(BaseModel):
     remediation: str
     is_in_history: bool
 
+    risk_score: int = 0
+    risk_factors: Optional[List[str]] = None
+    occurrences: int = 1
+
+    introduced_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    exposure_days: Optional[int] = None
+    commits_affected: Optional[int] = None
+    authors_count: Optional[int] = None
+
     model_config = {"from_attributes": True}
 
 
@@ -96,3 +106,27 @@ class StatsOut(BaseModel):
     by_type: dict
     recent_scans: List[ScanListItem]
     findings_over_time: List[dict]  # [{date, count}]
+
+
+# ─── Differential scanning ──────────────────────────────────────────────────
+
+class DiffFinding(BaseModel):
+    secret_type: str
+    severity: str
+    file_path: str
+    line_number: int
+    risk_score: int = 0
+
+
+class ScanDiffOut(BaseModel):
+    has_baseline: bool
+    baseline_scan_id: Optional[str] = None
+    baseline_created_at: Optional[datetime] = None
+    current_total: int = 0
+    baseline_total: int = 0
+    new_count: int = 0
+    resolved_count: int = 0
+    unchanged_count: int = 0
+    net_change: int = 0  # current_total - baseline_total
+    new_findings: List[DiffFinding] = []
+    resolved_findings: List[DiffFinding] = []

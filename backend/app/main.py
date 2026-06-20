@@ -28,7 +28,7 @@ app = FastAPI(
         "DevSecOps tool for detecting hardcoded secrets using pattern matching, "
         "Shannon entropy analysis, and semantic heuristics."
     ),
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -50,4 +50,4 @@ app.include_router(stats.router, prefix="/api/v1")
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.0.0"}
+    return {"status": "ok", "version": "2.1.0"}

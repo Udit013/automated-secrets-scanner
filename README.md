@@ -46,12 +46,15 @@
 | **Semantic Heuristics** | Variable name analysis boosts confidence when surrounding context contains `key`, `secret`, `token`, `password` |
 | **CRITICAL / HIGH / MEDIUM / LOW** | Severity scored by secret type, entropy level, and file context |
 | **False-Positive Suppression** | Placeholder detection (14 regex patterns + unique-char ratio), test-file severity downgrading, comment-line skipping |
+| **Exposure Risk Score** | Transparent 0–100 score per finding combining severity, Git-history presence, occurrences, exposure duration, and entropy — with human-readable reasoning |
+| **Secret Lifecycle Timeline** | Git-history exposure intelligence: introduced date, last-seen date, exposure duration, commits affected, and number of authors involved |
+| **Differential Scanning** | Compares a scan against the previous scan of the same source — new vs. resolved secrets and a net-change summary |
 | **GitHub Repo Scanning** | Scans any public GitHub repo via API zipball — no `git clone` required |
 | **Git History Scanning** | Traverses all commits with GitPython — catches secrets added and later deleted |
 | **Real-Time Progress** | WebSocket endpoint streams live scan progress to the React frontend |
-| **Dashboard** | KPI cards (total scans, critical, high, total findings), severity pie chart, findings-over-time line chart, top-secret-types bar chart, recent scans table |
-| **Remediation Guidance** | Per-finding, step-by-step instructions for revoking and rotating each secret type |
-| **Export** | Download scan results as JSON or CSV |
+| **Dashboard** | KPI cards, severity pie chart, findings-over-time line chart, top-secret-types bar chart, differential summary, recent scans table |
+| **Remediation Patch Generator** | Generates env-var code replacements, a `.env.example` snippet, next-step guidance, and a downloadable `remediation.patch` — no repo write access required |
+| **Export** | Download scan results as JSON, CSV, or **SARIF 2.1.0** (GitHub Advanced Security compatible) |
 | **Scan Scheduling** | Cron-based recurring scans via APScheduler — set it and forget it |
 | **Email Alerts** | SMTP notification when a CRITICAL finding is detected (free with Gmail App Password) |
 | **REST API** | Fully documented OpenAPI/Swagger — drop into any CI/CD pipeline |
@@ -78,7 +81,7 @@
 | **Scanner** | Custom regex engine (26 patterns), Shannon entropy, GitPython |
 | **Scheduler** | APScheduler 3.x (`AsyncIOScheduler`) |
 | **Email** | aiosmtplib (async SMTP) |
-| **Frontend** | React 18, TypeScript 5, Vite, Tailwind CSS 3 |
+| **Frontend** | React 18, TypeScript 5, Vite, Tailwind CSS 3, Geist / Geist Mono (GitHub-style high-contrast dark theme) |
 | **Charts** | Recharts (PieChart, LineChart, BarChart) |
 | **Data fetching** | TanStack Query v5 (auto-refetch every 15 s) |
 | **Real-time** | Native WebSocket (browser + FastAPI) |
@@ -173,8 +176,12 @@ All endpoints are documented interactively at `/docs`.
 | `GET` | `/api/v1/scans/{id}/findings` | Findings — filterable by severity / type |
 | `DELETE` | `/api/v1/scans/{id}` | Delete scan and its findings |
 | `WS` | `/api/v1/scans/ws/{id}` | WebSocket — real-time scan progress |
+| `GET` | `/api/v1/scans/{id}/diff` | Differential comparison vs. previous scan of the same source |
 | `GET` | `/api/v1/export/{id}/json` | Download JSON report |
 | `GET` | `/api/v1/export/{id}/csv` | Download CSV report |
+| `GET` | `/api/v1/export/{id}/sarif` | Download SARIF 2.1.0 report |
+| `GET` | `/api/v1/export/{id}/remediation` | Structured remediation report (JSON) |
+| `GET` | `/api/v1/export/{id}/patch` | Download remediation patch (env-var replacements) |
 | `GET` | `/api/v1/stats` | Dashboard statistics |
 | `POST` | `/api/v1/schedules` | Create a recurring scheduled scan |
 | `GET` | `/api/v1/schedules` | List all schedules |
@@ -287,7 +294,10 @@ automated-secrets-scanner/
 │   │   ├── notifications.py         # Async SMTP email alerts
 │   │   ├── scanner/
 │   │   │   ├── patterns.py          # 26 SecretPattern definitions with remediation
-│   │   │   ├── core.py              # Scan engine (regex + entropy + heuristics)
+│   │   │   ├── core.py              # Scan engine (regex + entropy + heuristics + lifecycle)
+│   │   │   ├── risk.py              # Transparent 0-100 exposure risk score
+│   │   │   ├── sarif.py             # SARIF 2.1.0 report builder
+│   │   │   ├── remediation.py       # Env-var patch + .env.example generator
 │   │   │   └── github_scanner.py    # GitHub API zipball download + extraction
 │   │   ├── routers/
 │   │   │   ├── scans.py             # Scan CRUD + WebSocket endpoint

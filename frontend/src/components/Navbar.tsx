@@ -40,8 +40,8 @@ export function Navbar() {
         ))}
       </div>
 
-      <div className="px-5 py-4 border-t border-gray-800 text-xs text-gray-600">
-        v2.0.0 · DevSecOps
+      <div className="px-5 py-4 border-t border-gray-700 text-xs text-gray-600">
+        v2.1.0 · DevSecOps
       </div>
     </nav>
   )

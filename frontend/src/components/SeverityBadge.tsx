@@ -1,18 +1,19 @@
 import { clsx } from 'clsx'
 import type { Severity } from '../api/client'
 
+// GitHub Advanced Security severity palette, rendered as tinted chips.
 const MAP: Record<Severity, string> = {
-  CRITICAL: 'bg-red-900 text-red-300 border-red-700',
-  HIGH: 'bg-orange-900 text-orange-300 border-orange-700',
-  MEDIUM: 'bg-yellow-900 text-yellow-300 border-yellow-700',
-  LOW: 'bg-blue-900 text-blue-300 border-blue-700',
+  CRITICAL: 'text-[#F85149] border-[#F85149]/40 bg-[#F85149]/10',
+  HIGH: 'text-[#FF7B72] border-[#FF7B72]/40 bg-[#FF7B72]/10',
+  MEDIUM: 'text-[#D29922] border-[#D29922]/40 bg-[#D29922]/10',
+  LOW: 'text-[#3FB950] border-[#3FB950]/40 bg-[#3FB950]/10',
 }
 
 export function SeverityBadge({ severity }: { severity: Severity }) {
   return (
     <span
       className={clsx(
-        'inline-flex items-center px-2 py-0.5 rounded text-xs font-bold border',
+        'inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold uppercase tracking-wide border',
         MAP[severity] ?? 'bg-gray-800 text-gray-400 border-gray-700',
       )}
     >

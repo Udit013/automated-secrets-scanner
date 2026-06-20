@@ -1,13 +1,16 @@
 import { useParams, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { getScan, getFindings, exportUrl } from '../api/client'
+import { getScan, getFindings, getScanDiff, exportUrl } from '../api/client'
 import { SeverityBadge } from '../components/SeverityBadge'
 import { StatusBadge } from '../components/StatusBadge'
+import { RiskBadge, RiskMeter } from '../components/RiskBadge'
+import { LifecycleTimeline } from '../components/LifecycleTimeline'
+import { DiffSummary } from '../components/DiffSummary'
 import { format } from 'date-fns'
 import { useState } from 'react'
 import {
   Download, ChevronDown, ChevronRight, ArrowLeft, GitCommit,
-  File, Clock, Database,
+  File, Clock, Database, FileCode2, FileDiff,
 } from 'lucide-react'
 import type { Finding, Severity } from '../api/client'
 import { clsx } from 'clsx'
@@ -37,6 +40,12 @@ export function ScanDetail() {
     enabled: !!id && scan?.status === 'completed',
   })
 
+  const { data: diff } = useQuery({
+    queryKey: ['diff', id],
+    queryFn: () => getScanDiff(id!),
+    enabled: !!id && scan?.status === 'completed',
+  })
+
   if (!scan) return <div className="text-gray-500 animate-pulse text-sm">Loading…</div>
 
   const toggle = (fid: string) => {
@@ -57,20 +66,20 @@ export function ScanDetail() {
           <ArrowLeft size={16} />
         </Link>
         <h1 className="text-xl font-bold text-white flex-1">Scan Details</h1>
-        <div className="flex gap-2">
-          <a
-            href={exportUrl(id!, 'json')}
-            download
-            className="btn-secondary text-xs flex items-center gap-1"
-          >
+        <div className="flex gap-2 flex-wrap">
+          <a href={exportUrl(id!, 'json')} download className="btn-secondary text-xs flex items-center gap-1">
             <Download size={13} /> JSON
           </a>
-          <a
-            href={exportUrl(id!, 'csv')}
-            download
-            className="btn-secondary text-xs flex items-center gap-1"
-          >
+          <a href={exportUrl(id!, 'csv')} download className="btn-secondary text-xs flex items-center gap-1">
             <Download size={13} /> CSV
+          </a>
+          <a href={exportUrl(id!, 'sarif')} download className="btn-secondary text-xs flex items-center gap-1"
+             title="SARIF 2.1.0 — GitHub Advanced Security compatible">
+            <FileCode2 size={13} /> SARIF
+          </a>
+          <a href={exportUrl(id!, 'patch')} download className="btn-secondary text-xs flex items-center gap-1"
+             title="Remediation patch (env-var replacements)">
+            <FileDiff size={13} /> Patch
           </a>
         </div>
       </div>
@@ -86,6 +95,9 @@ export function ScanDetail() {
           value={scan.completed_at ? format(new Date(scan.completed_at), 'MMM d, HH:mm') : '—'}
         />
       </div>
+
+      {/* Differential scan summary */}
+      {scan.status === 'completed' && diff && <DiffSummary diff={diff} />}
 
       {/* Severity summary */}
       {scan.status === 'completed' && (
@@ -190,24 +202,48 @@ function FindingRow({
         )}
         <SeverityBadge severity={f.severity} />
         <span className="text-sm text-gray-300 font-medium flex-1">{f.secret_type}</span>
-        <span className="text-xs font-mono text-gray-500">:{f.line_number}</span>
-        <span className="text-xs font-mono text-gray-600 ml-2 max-w-[200px] truncate">
-          {f.matched_string}
-        </span>
         {f.is_in_history && (
-          <span className="ml-2 flex items-center gap-1 text-xs text-purple-400" title="Found in git history">
+          <span className="flex items-center gap-1 text-xs text-brand-400" title="Found in git history">
             <GitCommit size={11} /> history
           </span>
         )}
+        <span className="text-xs font-mono text-gray-600 ml-1 max-w-[180px] truncate hidden md:inline">
+          {f.matched_string}
+        </span>
+        <span className="text-xs font-mono text-gray-500">:{f.line_number}</span>
+        <RiskBadge score={f.risk_score} />
       </button>
 
       {isOpen && (
-        <div className="px-6 pb-4 space-y-3 bg-gray-900/40">
-          <InfoRow label="Matched" value={<code className="text-red-300 text-xs bg-gray-800 px-2 py-0.5 rounded">{f.matched_string}</code>} />
-          <InfoRow label="Entropy" value={<span className="text-xs font-mono text-yellow-400">{f.entropy}</span>} />
+        <div className="px-6 pb-4 space-y-3 bg-gray-950/40">
+          {/* Risk score + reasoning */}
+          <div className="flex flex-col md:flex-row md:items-center gap-4 pt-3 pb-1">
+            <RiskMeter score={f.risk_score} />
+            {f.risk_factors && f.risk_factors.length > 0 && (
+              <div className="flex-1">
+                <div className="text-xs text-gray-500 mb-1.5">Risk reasoning</div>
+                <ul className="flex flex-wrap gap-1.5">
+                  {f.risk_factors.map((factor) => (
+                    <li
+                      key={factor}
+                      className="text-[11px] text-gray-300 bg-gray-800 border border-gray-700 rounded px-2 py-0.5"
+                    >
+                      {factor}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+
+          {/* Lifecycle timeline (git history only) */}
+          <LifecycleTimeline finding={f} />
+
+          <InfoRow label="Matched" value={<code className="text-[#FF7B72] text-xs bg-gray-800 px-2 py-0.5 rounded">{f.matched_string}</code>} />
+          <InfoRow label="Entropy" value={<span className="text-xs font-mono text-[#D29922]">{f.entropy}</span>} />
           <InfoRow label="Confidence" value={<span className="text-xs text-gray-300">{f.confidence}</span>} />
           {f.commit_hash && (
-            <InfoRow label="Commit" value={<code className="text-purple-300 text-xs">{f.commit_hash}</code>} />
+            <InfoRow label="Commit" value={<code className="text-brand-400 text-xs">{f.commit_hash}</code>} />
           )}
           <InfoRow
             label="Context"
@@ -267,6 +303,10 @@ function groupByFile(findings: Finding[]): Record<string, Finding[]> {
   const groups: Record<string, Finding[]> = {}
   for (const f of findings) {
     ;(groups[f.file_path] ??= []).push(f)
+  }
+  // Highest exposure risk first within each file.
+  for (const list of Object.values(groups)) {
+    list.sort((a, b) => b.risk_score - a.risk_score)
   }
   return groups
 }

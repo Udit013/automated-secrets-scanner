@@ -3,18 +3,18 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, CartesianGrid, Legend,
 } from 'recharts'
-import { getStats } from '../api/client'
+import { getStats, getScanDiff } from '../api/client'
 import { StatusBadge } from '../components/StatusBadge'
-import { SeverityBadge } from '../components/SeverityBadge'
+import { DiffSummary } from '../components/DiffSummary'
 import { format } from 'date-fns'
-import { ShieldAlert, AlertTriangle, Info, CheckCircle2, Scan } from 'lucide-react'
+import { ShieldAlert, AlertTriangle, Info, Scan } from 'lucide-react'
 import type { Severity } from '../api/client'
 
 const SEV_COLORS: Record<Severity, string> = {
-  CRITICAL: '#ef4444',
-  HIGH: '#f97316',
-  MEDIUM: '#eab308',
-  LOW: '#3b82f6',
+  CRITICAL: '#F85149',
+  HIGH: '#FF7B72',
+  MEDIUM: '#D29922',
+  LOW: '#3FB950',
 }
 
 export function Dashboard() {
@@ -22,6 +22,13 @@ export function Dashboard() {
     queryKey: ['stats'],
     queryFn: getStats,
     refetchInterval: 15_000,
+  })
+
+  const latestCompletedId = stats?.recent_scans.find((s) => s.status === 'completed')?.id
+  const { data: diff } = useQuery({
+    queryKey: ['dashboard-diff', latestCompletedId],
+    queryFn: () => getScanDiff(latestCompletedId!),
+    enabled: !!latestCompletedId,
   })
 
   if (isLoading || !stats) {
@@ -50,11 +57,14 @@ export function Dashboard() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard icon={<Scan size={18} />} label="Total Scans" value={stats.total_scans} color="text-brand-400" />
-        <KpiCard icon={<ShieldAlert size={18} />} label="Critical" value={stats.critical_count} color="text-red-400" />
-        <KpiCard icon={<AlertTriangle size={18} />} label="High" value={stats.high_count} color="text-orange-400" />
+        <KpiCard icon={<Scan size={18} />} label="Total Scans" value={stats.total_scans} color="text-brand-500" />
+        <KpiCard icon={<ShieldAlert size={18} />} label="Critical" value={stats.critical_count} color="text-[#F85149]" />
+        <KpiCard icon={<AlertTriangle size={18} />} label="High" value={stats.high_count} color="text-[#FF7B72]" />
         <KpiCard icon={<Info size={18} />} label="Total Findings" value={stats.total_findings} color="text-gray-300" />
       </div>
+
+      {/* Differential summary for the latest scan */}
+      {diff?.has_baseline && <DiffSummary diff={diff} compact />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Severity pie chart */}

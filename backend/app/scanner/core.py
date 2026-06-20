@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from typing import Optional, AsyncIterator
 from pathlib import Path
 
+from datetime import datetime
+
 from .patterns import PATTERNS, is_placeholder, is_test_file, SecretPattern
+from .risk import compute_risk_score
 
 
 @dataclass
@@ -26,6 +29,15 @@ class Finding:
     commit_hash: Optional[str] = None
     remediation: str = ""
     is_in_history: bool = False
+    # Risk + lifecycle (lifecycle stays None unless git history is scanned)
+    risk_score: int = 0
+    risk_factors: Optional[list] = None
+    occurrences: int = 1
+    introduced_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    exposure_days: Optional[int] = None
+    commits_affected: Optional[int] = None
+    authors_count: Optional[int] = None
 
 
 SCANNABLE_EXTENSIONS = {
@@ -115,6 +127,12 @@ def scan_text(
 
                 confidence = _confidence(entropy, True)
 
+                score, score_factors = compute_risk_score(
+                    severity,
+                    is_in_history=is_history,
+                    entropy=entropy,
+                )
+
                 findings.append(
                     Finding(
                         file_path=file_path,
@@ -128,6 +146,8 @@ def scan_text(
                         commit_hash=commit_hash,
                         remediation=pattern.remediation,
                         is_in_history=is_history,
+                        risk_score=score,
+                        risk_factors=score_factors,
                     )
                 )
 
@@ -194,6 +214,15 @@ def scan_git_history(
     max_commits: int = 100,
     min_entropy: float = MIN_ENTROPY,
 ) -> tuple[list[Finding], int]:
+    """
+    Walk git history and build a *lifecycle* for every distinct secret:
+    when it was first introduced, when it was last seen, how many commits
+    and authors it spans, and how long it was exposed.
+
+    Findings are de-duplicated by (file_path, secret_type, matched_string)
+    so a secret living across 9 commits surfaces once — with the full
+    exposure picture — rather than nine times.
+    """
     try:
         import git  # type: ignore
     except ImportError:
@@ -204,28 +233,71 @@ def scan_git_history(
     except Exception:
         return [], 0
 
-    all_findings: list[Finding] = []
+    # key -> aggregated lifecycle record
+    agg: dict[tuple, dict] = {}
     files_scanned = 0
 
     commits = list(repo.iter_commits("HEAD", max_count=max_commits))
     for commit in commits:
+        commit_dt = commit.committed_datetime.replace(tzinfo=None)
+        author = (commit.author.email or commit.author.name or "unknown").lower()
+        short_sha = commit.hexsha[:8]
         try:
             for item in commit.tree.traverse():
-                if item.type == "blob":
-                    try:
-                        content = item.data_stream.read().decode("utf-8", errors="ignore")
-                        findings = scan_text(
-                            content,
-                            item.path,
-                            min_entropy,
-                            commit_hash=commit.hexsha[:8],
-                            is_history=True,
-                        )
-                        all_findings.extend(findings)
-                        files_scanned += 1
-                    except Exception:
-                        continue
+                if item.type != "blob":
+                    continue
+                ext = Path(item.path).suffix
+                if ext not in SCANNABLE_EXTENSIONS and not item.path.split("/")[-1].startswith(".env"):
+                    continue
+                try:
+                    content = item.data_stream.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                files_scanned += 1
+                for f in scan_text(content, item.path, min_entropy,
+                                   commit_hash=short_sha, is_history=True):
+                    key = (f.file_path, f.secret_type, f.matched_string)
+                    rec = agg.get(key)
+                    if rec is None:
+                        agg[key] = {
+                            "finding": f,
+                            "first_dt": commit_dt,
+                            "last_dt": commit_dt,
+                            "first_sha": short_sha,
+                            "last_sha": short_sha,
+                            "commits": {short_sha},
+                            "authors": {author},
+                        }
+                    else:
+                        rec["commits"].add(short_sha)
+                        rec["authors"].add(author)
+                        if commit_dt < rec["first_dt"]:
+                            rec["first_dt"], rec["first_sha"] = commit_dt, short_sha
+                        if commit_dt > rec["last_dt"]:
+                            rec["last_dt"], rec["last_sha"] = commit_dt, short_sha
         except Exception:
             continue
 
-    return all_findings, files_scanned
+    findings: list[Finding] = []
+    for rec in agg.values():
+        f: Finding = rec["finding"]
+        exposure_days = max((rec["last_dt"] - rec["first_dt"]).days, 0)
+        f.introduced_at = rec["first_dt"]
+        f.last_seen_at = rec["last_dt"]
+        f.exposure_days = exposure_days
+        f.commits_affected = len(rec["commits"])
+        f.authors_count = len(rec["authors"])
+        f.occurrences = len(rec["commits"])
+        f.commit_hash = rec["last_sha"]
+        # Recompute risk now that lifecycle context is known
+        f.risk_score, f.risk_factors = compute_risk_score(
+            f.severity,
+            is_in_history=True,
+            occurrences=f.occurrences,
+            exposure_days=exposure_days,
+            authors_count=f.authors_count,
+            entropy=f.entropy,
+        )
+        findings.append(f)
+
+    return findings, files_scanned

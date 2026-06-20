@@ -38,6 +38,36 @@ export interface Finding {
   commit_hash: string | null
   remediation: string
   is_in_history: boolean
+  risk_score: number
+  risk_factors: string[] | null
+  occurrences: number
+  introduced_at: string | null
+  last_seen_at: string | null
+  exposure_days: number | null
+  commits_affected: number | null
+  authors_count: number | null
+}
+
+export interface DiffFinding {
+  secret_type: string
+  severity: Severity
+  file_path: string
+  line_number: number
+  risk_score: number
+}
+
+export interface ScanDiff {
+  has_baseline: boolean
+  baseline_scan_id: string | null
+  baseline_created_at: string | null
+  current_total: number
+  baseline_total: number
+  new_count: number
+  resolved_count: number
+  unchanged_count: number
+  net_change: number
+  new_findings: DiffFinding[]
+  resolved_findings: DiffFinding[]
 }
 
 export interface Scan {
@@ -111,6 +141,9 @@ export const deleteScan = (id: string) => api.delete(`/scans/${id}`)
 
 export const getStats = () => api.get<Stats>('/stats').then((r) => r.data)
 
+export const getScanDiff = (id: string) =>
+  api.get<ScanDiff>(`/scans/${id}/diff`).then((r) => r.data)
+
 export const createSchedule = (body: {
   name: string
   source_type: SourceType
@@ -127,5 +160,5 @@ export const toggleSchedule = (id: string) =>
 
 export const deleteSchedule = (id: string) => api.delete(`/schedules/${id}`)
 
-export const exportUrl = (scanId: string, format: 'json' | 'csv') =>
-  `/api/v1/export/${scanId}/${format}`
+export const exportUrl = (scanId: string, format: 'json' | 'csv' | 'sarif' | 'patch') =>
+  `${API_BASE_URL}/api/v1/export/${scanId}/${format}`

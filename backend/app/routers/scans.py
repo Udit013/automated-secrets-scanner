@@ -13,7 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models import Scan, Finding as FindingModel
-from ..schemas import StartScanRequest, ScanOut, ScanListItem, FindingOut
+from ..schemas import (
+    StartScanRequest, ScanOut, ScanListItem, FindingOut,
+    ScanDiffOut, DiffFinding,
+)
 from ..scanner.core import scan_text, Finding
 from ..scanner.github_scanner import scan_github_repo
 from ..notifications import send_critical_alert
@@ -88,6 +91,14 @@ async def _run_scan(scan_id: str):
                     commit_hash=f.commit_hash,
                     remediation=f.remediation,
                     is_in_history=f.is_in_history,
+                    risk_score=f.risk_score,
+                    risk_factors=f.risk_factors,
+                    occurrences=f.occurrences,
+                    introduced_at=f.introduced_at,
+                    last_seen_at=f.last_seen_at,
+                    exposure_days=f.exposure_days,
+                    commits_affected=f.commits_affected,
+                    authors_count=f.authors_count,
                 ))
 
             scan.status = "completed"
@@ -185,6 +196,77 @@ async def get_findings(
     q = q.limit(limit).offset(offset)
     result = await db.execute(q)
     return result.scalars().all()
+
+
+def _finding_key(f) -> tuple:
+    """Stable identity for a secret across scans (line numbers may shift)."""
+    return (f.file_path, f.secret_type, f.matched_string)
+
+
+@router.get("/{scan_id}/diff", response_model=ScanDiffOut)
+async def diff_scan(scan_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
+    """
+    Compare this scan against the most recent earlier *completed* scan of the
+    same source — surfacing newly introduced and resolved secrets.
+    """
+    scan = await db.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(404, "Scan not found")
+
+    baseline = (
+        await db.execute(
+            select(Scan)
+            .where(
+                Scan.source_ref == scan.source_ref,
+                Scan.status == "completed",
+                Scan.created_at < scan.created_at,
+                Scan.id != scan.id,
+            )
+            .order_by(Scan.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    cur = (
+        await db.execute(select(FindingModel).where(FindingModel.scan_id == scan_id))
+    ).scalars().all()
+
+    if not baseline:
+        return ScanDiffOut(has_baseline=False, current_total=len(cur))
+
+    base = (
+        await db.execute(select(FindingModel).where(FindingModel.scan_id == baseline.id))
+    ).scalars().all()
+
+    cur_map = {_finding_key(f): f for f in cur}
+    base_map = {_finding_key(f): f for f in base}
+
+    new_keys = cur_map.keys() - base_map.keys()
+    resolved_keys = base_map.keys() - cur_map.keys()
+    unchanged_keys = cur_map.keys() & base_map.keys()
+
+    def to_diff(f) -> DiffFinding:
+        return DiffFinding(
+            secret_type=f.secret_type,
+            severity=f.severity,
+            file_path=f.file_path,
+            line_number=f.line_number,
+            risk_score=f.risk_score or 0,
+        )
+
+    return ScanDiffOut(
+        has_baseline=True,
+        baseline_scan_id=baseline.id,
+        baseline_created_at=baseline.created_at,
+        current_total=len(cur),
+        baseline_total=len(base),
+        new_count=len(new_keys),
+        resolved_count=len(resolved_keys),
+        unchanged_count=len(unchanged_keys),
+        net_change=len(cur) - len(base),
+        new_findings=[to_diff(cur_map[k]) for k in new_keys],
+        resolved_findings=[to_diff(base_map[k]) for k in resolved_keys],
+    )
 
 
 @router.delete("/{scan_id}", status_code=204)
