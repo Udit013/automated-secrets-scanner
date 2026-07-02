@@ -53,9 +53,9 @@ async def _run_scheduled_scan(schedule_id: str, source_type: str, source_ref: st
     async with AsyncSessionLocal() as db:
         schedule = await db.get(ScanSchedule, schedule_id)
         if schedule:
-            job = _scheduler.get_job(schedule_id)
-            if job and job.next_run_time:
-                schedule.next_run_at = job.next_run_time
+            nrt = _next_run_time(_scheduler.get_job(schedule_id))
+            if nrt:
+                schedule.next_run_at = nrt
             await db.commit()
 
 
@@ -83,7 +83,25 @@ def add_schedule(
     )
 
     job = _scheduler.get_job(schedule_id)
-    return job.next_run_time if job else None
+    return _next_run_time(job)
+
+
+def _next_run_time(job) -> Optional[datetime]:
+    """
+    Safe accessor: a Job only gains `next_run_time` once the scheduler is
+    running; before that (e.g. during startup or in tests) the attribute
+    does not exist at all. Fall back to computing it from the trigger.
+    """
+    if job is None:
+        return None
+    nrt = getattr(job, "next_run_time", None)
+    if nrt is not None:
+        return nrt
+    try:
+        from datetime import timezone
+        return job.trigger.get_next_fire_time(None, datetime.now(timezone.utc))
+    except Exception:
+        return None
 
 
 def remove_schedule(schedule_id: str):

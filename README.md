@@ -384,10 +384,10 @@ python seed_demo.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT
 
 ## Running Tests
 
-**66 tests** across two suites, run automatically in CI on every push.
+**75 tests** across two suites, run automatically in CI on every push.
 
 ```bash
-# Backend suite (47 tests): API integration + unit tests
+# Backend suite (56 tests): API integration + unit tests
 cd backend
 pip install -r requirements-dev.txt
 pytest tests/ -v
@@ -399,6 +399,7 @@ pytest test_scanner.py -v
 
 Coverage includes:
 - **API integration** — full paste-scan lifecycle over a real (throwaway) database: scan → findings → severity filters → diff → JSON/CSV/SARIF/patch exports → stats → delete
+- **Input validation** — GitHub URL allow-listing, paste size limits (512 KB), cron syntax, pagination clamps, out-of-range parameter rejection
 - **Risk scoring** — severity bases, git-history/occurrence/exposure/author/entropy bonuses, 100-point cap, reason strings for every point awarded
 - **SARIF** — schema/version, rule deduplication, severity→level mapping, locations, fingerprints
 - **Remediation** — env-var derivation, per-language replacements (Python/Node/Go/Ruby/PHP/.env), patch hunk grouping

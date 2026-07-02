@@ -6,7 +6,10 @@ import asyncio
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter, BackgroundTasks, Depends, HTTPException, Query,
+    WebSocket, WebSocketDisconnect,
+)
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -161,8 +164,8 @@ async def start_scan(
 @router.get("", response_model=list[ScanListItem])
 async def list_scans(
     db: Annotated[AsyncSession, Depends(get_db)],
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
     result = await db.execute(
         select(Scan).order_by(Scan.created_at.desc()).limit(limit).offset(offset)
@@ -184,8 +187,8 @@ async def get_findings(
     db: Annotated[AsyncSession, Depends(get_db)],
     severity: str | None = None,
     secret_type: str | None = None,
-    limit: int = 500,
-    offset: int = 0,
+    limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
 ):
     q = select(FindingModel).where(FindingModel.scan_id == scan_id)
     if severity:
