@@ -4,7 +4,6 @@ Scan management endpoints + WebSocket for live progress.
 
 import asyncio
 import json
-from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -12,7 +11,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models import Scan, Finding as FindingModel
+from ..models import Scan, Finding as FindingModel, utcnow_naive
 from ..schemas import (
     StartScanRequest, ScanOut, ScanListItem, FindingOut,
     ScanDiffOut, DiffFinding,
@@ -105,7 +104,7 @@ async def _run_scan(scan_id: str):
             scan.total_findings = len(findings)
             scan.files_scanned = files_scanned
             scan.progress = 100
-            scan.completed_at = datetime.utcnow()
+            scan.completed_at = utcnow_naive()
             await db.commit()
 
         await _broadcast(scan_id, {
@@ -131,7 +130,7 @@ async def _run_scan(scan_id: str):
                 scan.status = "failed"
                 scan.error_message = str(e)
                 scan.progress = 100
-                scan.completed_at = datetime.utcnow()
+                scan.completed_at = utcnow_naive()
                 await db.commit()
         await _broadcast(scan_id, {"event": "failed", "error": str(e)})
 

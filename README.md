@@ -5,6 +5,7 @@
 **Live Demo:** [https://automated-secrets-scanner.vercel.app](https://automated-secrets-scanner.vercel.app)  
 **API Docs:** [https://secrets-scanner-api.onrender.com/docs](https://secrets-scanner-api.onrender.com/docs)
 
+[![CI](https://github.com/Udit013/automated-secrets-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/Udit013/automated-secrets-scanner/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=black)](https://react.dev)
@@ -383,17 +384,25 @@ python seed_demo.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT
 
 ## Running Tests
 
+**66 tests** across two suites, run automatically in CI on every push.
+
 ```bash
-pip install -r requirements.txt
+# Backend suite (47 tests): API integration + unit tests
+cd backend
+pip install -r requirements-dev.txt
+pytest tests/ -v
+
+# CLI scanner suite (19 tests)
+pip install -r requirements.txt      # repo root
 pytest test_scanner.py -v
 ```
 
-All 19 unit tests cover:
-- AWS / GitHub / Stripe / JWT / SSH key detection
-- Placeholder suppression (`YOUR_KEY_HERE`, `${VAR}`, `example`, etc.)
-- Entropy threshold gating
-- Database connection string extraction
-- Test-file severity downgrading
+Coverage includes:
+- **API integration** — full paste-scan lifecycle over a real (throwaway) database: scan → findings → severity filters → diff → JSON/CSV/SARIF/patch exports → stats → delete
+- **Risk scoring** — severity bases, git-history/occurrence/exposure/author/entropy bonuses, 100-point cap, reason strings for every point awarded
+- **SARIF** — schema/version, rule deduplication, severity→level mapping, locations, fingerprints
+- **Remediation** — env-var derivation, per-language replacements (Python/Node/Go/Ruby/PHP/.env), patch hunk grouping
+- **Detection engine** — AWS / GitHub / Stripe / JWT / SSH keys, placeholder suppression, entropy gating, test-file downgrading
 
 ---
 

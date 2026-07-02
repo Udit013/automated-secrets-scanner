@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import String, Integer, Float, Boolean, DateTime, Text, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
@@ -7,6 +7,11 @@ from .database import Base
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+def utcnow_naive() -> datetime:
+    """Timezone-aware now, stored naive-UTC (SQLite has no tz support)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Scan(Base):
@@ -23,7 +28,7 @@ class Scan(Base):
     files_scanned: Mapped[int] = mapped_column(Integer, default=0)
     progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     findings: Mapped[list["Finding"]] = relationship(
@@ -76,4 +81,4 @@ class ScanSchedule(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_scan_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
