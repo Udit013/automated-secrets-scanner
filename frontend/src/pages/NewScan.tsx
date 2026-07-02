@@ -5,8 +5,19 @@ import { startScan } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { Github, Code2, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
+import { isAxiosError } from 'axios'
 
 type Tab = 'github' | 'paste'
+
+/** Surface FastAPI validation details instead of axios's generic message. */
+function apiErrorMessage(error: unknown): string {
+  if (isAxiosError(error)) {
+    const detail = error.response?.data?.detail
+    if (typeof detail === 'string') return detail
+    if (Array.isArray(detail) && detail[0]?.msg) return detail[0].msg
+  }
+  return (error as Error)?.message ?? 'Scan failed'
+}
 
 export function NewScan() {
   const [tab, setTab] = useState<Tab>('github')
@@ -163,7 +174,7 @@ export function NewScan() {
         {mutation.isError && (
           <div className="flex items-center gap-2 text-red-400 text-sm bg-red-900/20 rounded-lg px-4 py-3 border border-red-800">
             <AlertCircle size={15} />
-            {(mutation.error as Error)?.message ?? 'Scan failed'}
+            {apiErrorMessage(mutation.error)}
           </div>
         )}
 
