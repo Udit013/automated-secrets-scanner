@@ -1,58 +1,59 @@
-import { clsx } from 'clsx'
-
 export function riskColor(score: number): string {
-  if (score >= 80) return '#F85149' // critical
-  if (score >= 55) return '#FF7B72' // high
-  if (score >= 30) return '#D29922' // medium
-  return '#3FB950' // low
+  if (score >= 80) return '#F2545B'
+  if (score >= 55) return '#EE7A3B'
+  if (score >= 30) return '#D9A514'
+  return '#7E9CC9'
 }
 
 export function riskBand(score: number): string {
-  if (score >= 80) return 'Critical'
-  if (score >= 55) return 'High'
-  if (score >= 30) return 'Medium'
-  return 'Low'
+  if (score >= 80) return 'critical'
+  if (score >= 55) return 'high'
+  if (score >= 30) return 'medium'
+  return 'low'
 }
 
-/** Compact inline chip, e.g. in finding rows. */
+/** Zero-padded mono score — instrument readout, not a chip. */
 export function RiskBadge({ score }: { score: number }) {
-  const color = riskColor(score)
   return (
     <span
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono font-semibold border"
-      style={{ color, borderColor: `${color}55`, backgroundColor: `${color}15` }}
-      title={`Exposure risk: ${riskBand(score)}`}
+      className="font-mono text-2xs font-medium tabular-nums"
+      style={{ color: riskColor(score) }}
+      title={`Exposure risk ${score}/100 (${riskBand(score)})`}
     >
-      {score}
+      {String(score).padStart(3, '0')}
     </span>
   )
 }
 
-/** Large radial-style meter for the finding detail view. */
+/**
+ * Ten-segment exposure meter. Segments fill in the band color; the readout
+ * carries the exact value. Reads like hardware, not a donut chart.
+ */
 export function RiskMeter({ score }: { score: number }) {
   const color = riskColor(score)
-  const pct = Math.max(0, Math.min(100, score))
+  const filled = Math.round(Math.max(0, Math.min(100, score)) / 10)
   return (
     <div className="flex items-center gap-4">
-      <div
-        className="relative h-20 w-20 rounded-full flex items-center justify-center"
-        style={{ background: `conic-gradient(${color} ${pct * 3.6}deg, #21262D 0deg)` }}
-      >
-        <div className="h-[60px] w-[60px] rounded-full bg-gray-900 flex flex-col items-center justify-center">
-          <span className="text-lg font-bold font-mono" style={{ color }}>
+      <div>
+        <div className="kicker mb-1.5">Exposure risk</div>
+        <div className="flex items-baseline gap-2">
+          <span className="font-mono text-[22px] font-medium leading-none tabular-nums" style={{ color }}>
             {score}
           </span>
-          <span className="text-[9px] text-gray-500 -mt-0.5">/100</span>
+          <span className="text-2xs font-mono text-ivory-mute">/100</span>
+          <span className="text-2xs font-medium uppercase tracking-kicker" style={{ color }}>
+            {riskBand(score)}
+          </span>
         </div>
       </div>
-      <div>
-        <div className="text-xs text-gray-500 mb-0.5">Exposure Risk</div>
-        <div
-          className={clsx('text-sm font-semibold')}
-          style={{ color }}
-        >
-          {riskBand(score)}
-        </div>
+      <div className="flex gap-[3px]" role="img" aria-label={`Risk ${score} of 100`}>
+        {Array.from({ length: 10 }, (_, i) => (
+          <span
+            key={i}
+            className="h-4 w-1.5 rounded-[1px] transition-colors"
+            style={{ backgroundColor: i < filled ? color : '#26262C' }}
+          />
+        ))}
       </div>
     </div>
   )

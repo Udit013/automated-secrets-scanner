@@ -10,7 +10,6 @@ export default defineConfig({
         // chart code is cached independently of app code.
         manualChunks: {
           react: ['react', 'react-dom', 'react-router-dom'],
-          charts: ['recharts'],
           data: ['@tanstack/react-query', 'axios', 'date-fns'],
         },
       },

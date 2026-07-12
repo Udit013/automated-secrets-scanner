@@ -1,77 +1,56 @@
 import { format } from 'date-fns'
-import { GitCommit, Users, CalendarClock, Clock } from 'lucide-react'
 import type { Finding } from '../api/client'
 
 /**
- * Secret Lifecycle — exposure intelligence derived from Git history.
- * Only rendered when the finding carries lifecycle data.
+ * Secret lifecycle as an actual timeline: introduced → last seen drawn as
+ * a measured span with endpoints, annotated with commits and authors.
  */
 export function LifecycleTimeline({ finding: f }: { finding: Finding }) {
   if (!f.introduced_at && !f.last_seen_at) return null
 
   const fmt = (d: string | null) => (d ? format(new Date(d), 'MMM d, yyyy') : '—')
+  const days = f.exposure_days ?? 0
+  // Span width scales against a 90-day window so short exposures read short.
+  const spanPct = Math.max(8, Math.min(100, (days / 90) * 100))
 
   return (
-    <div className="rounded border border-gray-700 bg-gray-950 p-4">
-      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">
-        Secret Lifecycle
+    <div className="well px-4 py-3.5">
+      <div className="flex items-baseline justify-between mb-3">
+        <span className="kicker">Lifecycle</span>
+        <span className="text-2xs font-mono text-ivory-dim">
+          {f.commits_affected != null && `${f.commits_affected} commits`}
+          {f.commits_affected != null && f.authors_count != null && ' · '}
+          {f.authors_count != null && `${f.authors_count} author${f.authors_count === 1 ? '' : 's'}`}
+        </span>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
-        <Field icon={<CalendarClock size={13} />} label="Introduced" value={fmt(f.introduced_at)} />
-        <Field icon={<CalendarClock size={13} />} label="Last Seen" value={fmt(f.last_seen_at)} />
-        <Field
-          icon={<Clock size={13} />}
-          label="Exposure"
-          value={f.exposure_days != null ? `${f.exposure_days} day${f.exposure_days === 1 ? '' : 's'}` : '—'}
-        />
-        <Field
-          icon={<GitCommit size={13} />}
-          label="Commits"
-          value={f.commits_affected != null ? String(f.commits_affected) : '—'}
-        />
-        <Field
-          icon={<Users size={13} />}
-          label="Authors"
-          value={f.authors_count != null ? String(f.authors_count) : '—'}
-        />
-      </div>
-
-      {/* Simple exposure bar */}
-      {f.exposure_days != null && f.exposure_days > 0 && (
-        <div className="mt-4">
-          <div className="flex items-center justify-between text-[11px] text-gray-500 mb-1 font-mono">
-            <span>{fmt(f.introduced_at)}</span>
-            <span>{f.exposure_days}d exposed</span>
-            <span>{fmt(f.last_seen_at)}</span>
+      <div style={{ width: `${spanPct}%` }} className="min-w-[180px]">
+        <div className="relative h-2 flex items-center">
+          <span className="absolute left-0 h-2 w-2 rounded-full bg-sev-medium" />
+          <span className="mx-1 flex-1 border-t border-dashed border-sev-medium/60" />
+          <span className="absolute right-0 h-2 w-2 rounded-full ring-2 ring-sev-medium bg-ink-inset" />
+        </div>
+        <div className="flex justify-between mt-1.5 gap-4">
+          <div>
+            <div className="text-2xs font-mono text-ivory">{fmt(f.introduced_at)}</div>
+            <div className="text-2xs text-ivory-mute">introduced</div>
           </div>
-          <div className="h-1.5 w-full rounded-full bg-gray-800 overflow-hidden">
-            <div
-              className="h-full rounded-full bg-[#D29922]"
-              style={{ width: `${Math.min(100, (f.exposure_days / 30) * 100)}%` }}
-            />
+          <div className="text-right">
+            <div className="text-2xs font-mono text-ivory">{fmt(f.last_seen_at)}</div>
+            <div className="text-2xs text-ivory-mute">last seen</div>
           </div>
         </div>
-      )}
-    </div>
-  )
-}
-
-function Field({
-  icon,
-  label,
-  value,
-}: {
-  icon: React.ReactNode
-  label: string
-  value: string
-}) {
-  return (
-    <div>
-      <div className="flex items-center gap-1 text-xs text-gray-500 mb-1">
-        {icon} {label}
       </div>
-      <div className="text-sm text-gray-200 font-mono">{value}</div>
+
+      {f.exposure_days != null && (
+        <p className="mt-2.5 text-2xs text-ivory-dim">
+          Exposed for{' '}
+          <span className="font-mono text-sev-medium">
+            {f.exposure_days} day{f.exposure_days === 1 ? '' : 's'}
+          </span>{' '}
+          of repository history
+        </p>
+      )}
     </div>
   )
 }

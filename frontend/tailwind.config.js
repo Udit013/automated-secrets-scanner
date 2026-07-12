@@ -2,47 +2,65 @@
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
+    // Replace Tailwind's palette entirely: every color in the app is a
+    // deliberate token. Severity is the ONLY place hue carries meaning.
+    colors: {
+      transparent: 'transparent',
+      current: 'currentColor',
+
+      // Ink — warm near-black surface steps (no borders-as-boxes; depth
+      // comes from background steps and hairline rules).
+      ink: {
+        DEFAULT: '#101014', // app canvas
+        raised: '#17171C', // panels, table headers
+        overlay: '#1E1E24', // hover, expanded rows
+        inset: '#0B0B0E', // wells: code, inputs
+      },
+
+      // Hairlines
+      line: {
+        DEFAULT: '#26262C',
+        strong: '#3B3B44',
+      },
+
+      // Ivory text ramp — warm, not blue-gray
+      ivory: {
+        DEFAULT: '#ECEAE6', // primary text & interactive accent
+        dim: '#A8A5A0', // secondary text
+        mute: '#66645F', // tertiary / disabled
+        faint: '#3E3D39', // decorative glyphs
+      },
+
+      // Severity — status palette. Shipped with text labels, never
+      // color alone. CVD-separation and contrast validated on #101014.
+      sev: {
+        critical: '#F2545B',
+        high: '#EE7A3B',
+        medium: '#D9A514',
+        low: '#7E9CC9',
+      },
+
+      ok: '#57AB5A', // resolved / clean / success
+    },
+    fontFamily: {
+      sans: ['"Instrument Sans"', 'system-ui', 'sans-serif'],
+      mono: ['"IBM Plex Mono"', 'ui-monospace', 'monospace'],
+    },
+    borderRadius: {
+      none: '0',
+      sm: '2px',
+      DEFAULT: '3px',
+      full: '9999px',
+    },
     extend: {
-      fontFamily: {
-        sans: ['Geist', 'system-ui', 'sans-serif'],
-        mono: ['"Geist Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+      fontSize: {
+        '2xs': ['0.6875rem', '1rem'], // 11px — table meta, mono annotations
       },
-      colors: {
-        // GitHub-style high-contrast dark surfaces. Existing markup uses the
-        // Tailwind gray scale, so we remap it to the enterprise palette.
-        gray: {
-          950: '#0D1117', // app background
-          900: '#161B22', // cards
-          850: '#1C2128', // elevated surfaces
-          800: '#21262D', // hover / inset surfaces
-          700: '#30363D', // borders
-          600: '#484F58', // muted icons
-          500: '#8B949E', // secondary text
-          400: '#8B949E', // secondary text
-          300: '#C9D1D9', // body text
-          200: '#E6EDF3',
-          100: '#F0F6FC', // primary text
-        },
-        brand: {
-          50: '#cae8ff',
-          100: '#a5d6ff',
-          400: '#79C0FF', // accent hover
-          500: '#58A6FF', // accent
-          600: '#388BFD',
-          700: '#1F6FEB',
-          900: '#0d2d6b',
-        },
-        sev: {
-          critical: '#F85149',
-          high: '#FF7B72',
-          medium: '#D29922',
-          low: '#3FB950',
-        },
+      letterSpacing: {
+        kicker: '0.12em',
       },
-      borderRadius: {
-        DEFAULT: '6px',
-        lg: '6px',
-        xl: '8px',
+      maxWidth: {
+        page: '72rem',
       },
     },
   },

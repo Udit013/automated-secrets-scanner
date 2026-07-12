@@ -21,7 +21,7 @@
 ┌──────────────────────────────────────────────────────────────┐
 │                   React Frontend (Vite + TS)                 │
 │   Dashboard · New Scan · History · Scan Detail · Schedules   │
-│   Recharts · TanStack Query v5 · WebSocket (live progress)   │
+│   Custom SVG charts · TanStack Query v5 · WebSocket progress │
 └─────────────────────┬────────────────────────────────────────┘
                       │  HTTP / WebSocket
 ┌─────────────────────▼────────────────────────────────────────┐
@@ -82,8 +82,8 @@
 | **Scanner** | Custom regex engine (26 patterns), Shannon entropy, GitPython |
 | **Scheduler** | APScheduler 3.x (`AsyncIOScheduler`) |
 | **Email** | aiosmtplib (async SMTP) |
-| **Frontend** | React 18, TypeScript 5, Vite, Tailwind CSS 3, Geist / Geist Mono (GitHub-style high-contrast dark theme) |
-| **Charts** | Recharts (PieChart, LineChart, BarChart) |
+| **Frontend** | React 18, TypeScript 5, Vite, Tailwind CSS 3 (custom token system), Instrument Sans / IBM Plex Mono |
+| **Charts** | Hand-built SVG: severity spectrum bar, stepped trend line with crosshair tooltip, ranked magnitude bars — zero chart-library weight |
 | **Data fetching** | TanStack Query v5 (auto-refetch every 15 s) |
 | **Real-time** | Native WebSocket (browser + FastAPI) |
 | **Deploy** | Render (backend) + Vercel (frontend) — both free tier |
@@ -320,7 +320,7 @@ automated-secrets-scanner/
 │   │   │   ├── SeverityBadge.tsx    # CRITICAL / HIGH / MEDIUM / LOW chip
 │   │   │   └── StatusBadge.tsx      # queued / running / completed / failed chip
 │   │   └── pages/
-│   │       ├── Dashboard.tsx        # KPI cards + Recharts charts
+│   │       ├── Dashboard.tsx        # Stat strip + custom SVG charts
 │   │       ├── NewScan.tsx          # Scan form + live WebSocket progress bar
 │   │       ├── ScanHistory.tsx      # Searchable scan list with status filters
 │   │       ├── ScanDetail.tsx       # Findings grouped by file with remediation

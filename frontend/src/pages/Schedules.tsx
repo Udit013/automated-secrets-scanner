@@ -1,17 +1,17 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+import { format } from 'date-fns'
+import { clsx } from 'clsx'
 import {
   listSchedules, createSchedule, toggleSchedule, deleteSchedule,
 } from '../api/client'
-import { format } from 'date-fns'
-import { PauseCircle, PlayCircle, Trash2, Plus, ExternalLink } from 'lucide-react'
-import { Link } from 'react-router-dom'
 
 const CRON_PRESETS = [
-  { label: 'Every day at 9 AM', value: '0 9 * * *' },
-  { label: 'Every Monday at 8 AM', value: '0 8 * * 1' },
-  { label: 'Every hour', value: '0 * * * *' },
-  { label: 'Every 6 hours', value: '0 */6 * * *' },
+  { label: 'daily 09:00', value: '0 9 * * *' },
+  { label: 'mondays 08:00', value: '0 8 * * 1' },
+  { label: 'hourly', value: '0 * * * *' },
+  { label: 'every 6h', value: '0 */6 * * *' },
 ]
 
 export function Schedules() {
@@ -20,6 +20,7 @@ export function Schedules() {
   const [sourceRef, setSourceRef] = useState('')
   const [cron, setCron] = useState('0 9 * * *')
   const [scanHistory, setScanHistory] = useState(false)
+  const [confirmingId, setConfirmingId] = useState<string | null>(null)
 
   const qc = useQueryClient()
 
@@ -46,7 +47,10 @@ export function Schedules() {
 
   const deleteMut = useMutation({
     mutationFn: deleteSchedule,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['schedules'] }),
+    onSuccess: () => {
+      setConfirmingId(null)
+      qc.invalidateQueries({ queryKey: ['schedules'] })
+    },
   })
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -61,136 +65,208 @@ export function Schedules() {
   }
 
   return (
-    <div className="space-y-6 max-w-4xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-white">Scan Schedules</h1>
-        <button onClick={() => setShowForm((v) => !v)} className="btn-primary text-sm flex items-center gap-1">
-          <Plus size={14} /> New Schedule
+    <div>
+      <div className="flex items-end justify-between pb-5">
+        <div>
+          <p className="kicker mb-1">Automation</p>
+          <h1 className="page-title">Schedules</h1>
+        </div>
+        <button
+          onClick={() => setShowForm((v) => !v)}
+          className={showForm ? 'btn-ghost h-8' : 'btn-primary h-8'}
+          aria-expanded={showForm}
+        >
+          {showForm ? 'Close' : 'New schedule'}
         </button>
       </div>
 
-      {showForm && (
-        <form onSubmit={handleSubmit} className="card space-y-4">
-          <h2 className="font-semibold text-white">Create Schedule</h2>
-
-          <div>
-            <label className="label">Schedule name</label>
-            <input className="input" placeholder="Nightly main repo scan" value={name} onChange={(e) => setName(e.target.value)} required />
-          </div>
-
-          <div>
-            <label className="label">GitHub Repository URL</label>
-            <input className="input" placeholder="https://github.com/owner/repo" value={sourceRef} onChange={(e) => setSourceRef(e.target.value)} required />
-          </div>
-
-          <div>
-            <label className="label">Cron expression</label>
-            <div className="flex gap-2 flex-wrap mb-2">
-              {CRON_PRESETS.map((p) => (
-                <button
-                  key={p.value}
-                  type="button"
-                  onClick={() => setCron(p.value)}
-                  className={`text-xs px-2 py-1 rounded border transition-colors ${
-                    cron === p.value
-                      ? 'border-brand-500 text-brand-400 bg-brand-500/10'
-                      : 'border-gray-700 text-gray-500 hover:border-gray-500'
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
+      {/* Create form — inline panel with a measured grid transition */}
+      <div
+        className="grid transition-[grid-template-rows] duration-200"
+        style={{ gridTemplateRows: showForm ? '1fr' : '0fr' }}
+      >
+        <div className="overflow-hidden">
+          <form onSubmit={handleSubmit} className="panel px-5 py-5 mb-6 space-y-5">
+            <div className="grid sm:grid-cols-2 gap-5">
+              <div>
+                <label htmlFor="sched-name" className="field-label">Name</label>
+                <input
+                  id="sched-name"
+                  className="field"
+                  placeholder="Nightly main-repo sweep"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor="sched-repo" className="field-label">Repository URL</label>
+                <input
+                  id="sched-repo"
+                  className="field font-mono text-2xs"
+                  placeholder="https://github.com/owner/repo"
+                  value={sourceRef}
+                  onChange={(e) => setSourceRef(e.target.value)}
+                  required
+                />
+              </div>
             </div>
-            <input
-              className="input font-mono"
-              value={cron}
-              onChange={(e) => setCron(e.target.value)}
-              placeholder="minute hour day month weekday"
-              required
-            />
-            <p className="text-xs text-gray-600 mt-1">5-field cron: minute hour day month weekday</p>
-          </div>
 
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input type="checkbox" checked={scanHistory} onChange={(e) => setScanHistory(e.target.checked)} className="accent-brand-500" />
-            <span className="text-sm text-gray-300">Include git history (last 100 commits)</span>
-          </label>
+            <div>
+              <label htmlFor="sched-cron" className="field-label">Cadence</label>
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                {CRON_PRESETS.map((p) => (
+                  <button
+                    key={p.value}
+                    type="button"
+                    onClick={() => setCron(p.value)}
+                    aria-pressed={cron === p.value}
+                    className={clsx(
+                      'h-6 px-2 rounded-sm text-2xs font-mono transition-colors',
+                      cron === p.value
+                        ? 'bg-ink-overlay text-ivory ring-1 ring-line-strong'
+                        : 'text-ivory-mute hover:text-ivory-dim hover:bg-ink-overlay',
+                    )}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <input
+                id="sched-cron"
+                className="field w-56 font-mono text-2xs"
+                value={cron}
+                onChange={(e) => setCron(e.target.value)}
+                placeholder="min hour day month weekday"
+                required
+              />
+              <p className="text-2xs text-ivory-mute mt-1.5 font-mono">
+                {cron} · five-field cron
+              </p>
+            </div>
 
-          {createMut.isError && (
-            <p className="text-red-400 text-sm">{(createMut.error as Error)?.message}</p>
-          )}
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={scanHistory}
+                onChange={(e) => setScanHistory(e.target.checked)}
+                className="h-3.5 w-3.5 accent-[#ECEAE6]"
+              />
+              <span className="text-[13px] text-ivory">Include git history each run</span>
+            </label>
 
-          <div className="flex gap-3">
-            <button type="submit" className="btn-primary text-sm" disabled={createMut.isPending}>
-              {createMut.isPending ? 'Creating…' : 'Create Schedule'}
-            </button>
-            <button type="button" className="btn-secondary text-sm" onClick={() => setShowForm(false)}>
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
+            {createMut.isError && (
+              <p className="text-2xs font-mono text-sev-critical" role="alert">
+                ✕ {(createMut.error as Error)?.message}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <button type="submit" className="btn-primary" disabled={createMut.isPending}>
+                {createMut.isPending ? 'Creating…' : 'Create schedule'}
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => setShowForm(false)}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
 
       {isLoading ? (
-        <p className="text-gray-500 text-sm animate-pulse">Loading…</p>
+        <p className="text-2xs font-mono text-ivory-mute animate-pulse rule pt-6">loading…</p>
       ) : (schedules ?? []).length === 0 ? (
-        <div className="card text-center py-12 text-gray-500">
-          No schedules yet. Create one above to run recurring scans.
+        <div className="rule pt-14 pb-10 text-center">
+          <p className="font-mono text-2xs text-ivory-mute mb-2">[ no recurring scans ]</p>
+          <p className="text-2xs text-ivory-mute">
+            Schedules run unattended and alert on critical findings.
+          </p>
         </div>
       ) : (
-        <div className="card p-0 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-800/60">
-              <tr className="text-left text-gray-500">
-                <th className="px-4 py-3 font-medium">Name</th>
-                <th className="px-4 py-3 font-medium">Repository</th>
-                <th className="px-4 py-3 font-medium">Cron</th>
-                <th className="px-4 py-3 font-medium">Next Run</th>
-                <th className="px-4 py-3 font-medium">Last Run</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium"></th>
+        <div className="rule">
+          <table className="ledger-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Repository</th>
+                <th>Cadence</th>
+                <th className="!text-right">Next run</th>
+                <th className="!text-right">Last run</th>
+                <th>State</th>
+                <th className="w-32" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800">
+            <tbody>
               {schedules!.map((s) => (
-                <tr key={s.id} className="hover:bg-gray-800/20 transition-colors">
-                  <td className="px-4 py-3 text-gray-300 font-medium">{s.name}</td>
-                  <td className="px-4 py-3 text-gray-500 truncate max-w-[180px]" title={s.source_ref}>
-                    {s.source_ref.replace('https://github.com/', '')}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-400">{s.cron_expression}</td>
-                  <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
-                    {s.next_run_at ? format(new Date(s.next_run_at), 'MMM d, HH:mm') : '—'}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
-                    {s.last_run_at ? format(new Date(s.last_run_at), 'MMM d, HH:mm') : 'Never'}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`text-xs px-2 py-0.5 rounded ${s.enabled ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-gray-500'}`}>
-                      {s.enabled ? 'active' : 'paused'}
+                <tr key={s.id} className="group">
+                  <td className="text-[13px] text-ivory">{s.name}</td>
+                  <td className="max-w-[200px]">
+                    <span className="block truncate font-mono text-2xs text-ivory-dim" title={s.source_ref}>
+                      {s.source_ref.replace('https://github.com/', '')}
                     </span>
                   </td>
-                  <td className="px-4 py-3 flex items-center gap-2 justify-end">
-                    {s.last_scan_id && (
-                      <Link to={`/history/${s.last_scan_id}`} className="text-gray-500 hover:text-brand-400 transition-colors" title="Last scan">
-                        <ExternalLink size={13} />
-                      </Link>
-                    )}
-                    <button
-                      onClick={() => toggleMut.mutate(s.id)}
-                      className="text-gray-500 hover:text-yellow-400 transition-colors"
-                      title={s.enabled ? 'Pause' : 'Resume'}
-                    >
-                      {s.enabled ? <PauseCircle size={14} /> : <PlayCircle size={14} />}
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (confirm('Delete this schedule?')) deleteMut.mutate(s.id)
-                      }}
-                      className="text-gray-600 hover:text-red-400 transition-colors"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                  <td className="font-mono text-2xs text-ivory-dim">{s.cron_expression}</td>
+                  <td className="text-right font-mono text-2xs text-ivory-mute whitespace-nowrap">
+                    {s.next_run_at ? format(new Date(s.next_run_at), 'MMM d · HH:mm') : '—'}
+                  </td>
+                  <td className="text-right font-mono text-2xs text-ivory-mute whitespace-nowrap">
+                    {s.last_run_at ? format(new Date(s.last_run_at), 'MMM d · HH:mm') : 'never'}
+                  </td>
+                  <td>
+                    <span className="inline-flex items-center gap-1.5 text-2xs font-mono">
+                      <span
+                        className={clsx(
+                          'h-1.5 w-1.5 rounded-full',
+                          s.enabled ? 'bg-ok' : 'bg-ivory-mute',
+                        )}
+                        aria-hidden
+                      />
+                      <span className={s.enabled ? 'text-ivory-dim' : 'text-ivory-mute'}>
+                        {s.enabled ? 'armed' : 'paused'}
+                      </span>
+                    </span>
+                  </td>
+                  <td className="text-right">
+                    <span className="inline-flex items-center gap-3">
+                      {s.last_scan_id && (
+                        <Link
+                          to={`/history/${s.last_scan_id}`}
+                          className="text-2xs text-ivory-mute hover:text-ivory transition-colors"
+                        >
+                          report
+                        </Link>
+                      )}
+                      <button
+                        onClick={() => toggleMut.mutate(s.id)}
+                        className="text-2xs text-ivory-mute hover:text-ivory transition-colors"
+                      >
+                        {s.enabled ? 'pause' : 'resume'}
+                      </button>
+                      {confirmingId === s.id ? (
+                        <span className="inline-flex items-center gap-2">
+                          <button
+                            onClick={() => deleteMut.mutate(s.id)}
+                            className="text-2xs font-medium text-sev-critical hover:underline underline-offset-2"
+                          >
+                            delete
+                          </button>
+                          <button
+                            onClick={() => setConfirmingId(null)}
+                            className="text-2xs text-ivory-mute hover:text-ivory"
+                          >
+                            keep
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmingId(s.id)}
+                          className="text-2xs text-ivory-mute opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-sev-critical transition-all"
+                          aria-label={`Delete schedule ${s.name}`}
+                        >
+                          remove
+                        </button>
+                      )}
+                    </span>
                   </td>
                 </tr>
               ))}

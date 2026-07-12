@@ -2,49 +2,142 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Secrets Scanner — ops-console design language.
+ *
+ * Principles:
+ *  1. Color is signal. Hue appears only where it means severity or state;
+ *     everything interactive is ivory-on-ink.
+ *  2. Rules, not boxes. Sections separate with hairlines and background
+ *     steps, not bordered cards.
+ *  3. Two voices: Instrument Sans speaks, IBM Plex Mono measures. Every
+ *     number, path, hash and timestamp is mono.
+ */
+
 @layer base {
   body {
-    @apply bg-gray-950 text-gray-100 antialiased;
-    font-family: 'Geist', system-ui, sans-serif;
+    @apply bg-ink text-ivory antialiased text-[13px] leading-relaxed;
   }
   code, pre, .font-mono {
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
   }
-  /* Subtle scrollbars to match the enterprise aesthetic */
+
+  ::selection {
+    @apply bg-ivory text-ink;
+  }
+
+  /* Keyboard focus is part of the design, not an afterthought. */
+  :focus-visible {
+    outline: 1px solid #eceae6;
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
   ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
   }
   ::-webkit-scrollbar-thumb {
-    @apply bg-gray-700 rounded;
+    @apply bg-line-strong rounded-full;
   }
   ::-webkit-scrollbar-track {
-    @apply bg-transparent;
+    background: transparent;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
   }
 }
 
 @layer components {
-  .card {
-    @apply bg-gray-900 border border-gray-700 rounded-lg p-5;
+  /* ── Type voices ─────────────────────────────────────────────── */
+
+  /* Small tracked label above sections and data. */
+  .kicker {
+    @apply text-2xs font-medium uppercase tracking-kicker text-ivory-mute;
   }
-  .card-elevated {
-    @apply bg-gray-850 border border-gray-700 rounded-lg;
+
+  .page-title {
+    @apply text-[22px] font-semibold leading-tight text-ivory;
+    letter-spacing: -0.01em;
+  }
+
+  /* Large measured numeral. */
+  .numeral {
+    @apply font-mono text-[26px] font-medium leading-none text-ivory;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Structure ───────────────────────────────────────────────── */
+
+  .rule {
+    @apply border-t border-line;
+  }
+
+  .panel {
+    @apply bg-ink-raised rounded;
+  }
+
+  .well {
+    @apply bg-ink-inset rounded-sm;
+  }
+
+  /* ── Controls ────────────────────────────────────────────────── */
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 h-8 px-3.5 rounded-sm
+           text-[13px] font-medium select-none transition-colors
+           disabled:opacity-40 disabled:pointer-events-none;
   }
   .btn-primary {
-    @apply bg-brand-700 hover:bg-brand-600 text-white font-medium px-4 py-2 rounded
-           transition-colors disabled:opacity-50 disabled:cursor-not-allowed
-           border border-brand-600;
+    @apply btn bg-ivory text-ink hover:bg-[#ffffff];
   }
-  .btn-secondary {
-    @apply bg-gray-800 hover:bg-gray-700 text-gray-200 font-medium px-4 py-2 rounded
-           border border-gray-700 transition-colors;
+  .btn-ghost {
+    @apply btn text-ivory-dim hover:text-ivory hover:bg-ink-overlay;
   }
-  .input {
-    @apply w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm
-           focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500
-           placeholder-gray-600 text-gray-100;
+  .btn-outline {
+    @apply btn border border-line-strong text-ivory-dim hover:text-ivory hover:border-ivory-mute;
   }
-  .label {
-    @apply block text-sm font-medium text-gray-400 mb-1.5;
+  .btn-danger {
+    @apply btn text-sev-critical hover:bg-sev-critical/10;
+  }
+
+  .field {
+    @apply w-full bg-ink-inset rounded-sm px-3 h-9 text-[13px] text-ivory
+           border border-line placeholder:text-ivory-mute
+           focus:border-ivory-mute focus:outline-none transition-colors;
+  }
+  textarea.field {
+    @apply h-auto py-2.5 leading-relaxed;
+  }
+
+  .field-label {
+    @apply block text-2xs font-medium uppercase tracking-kicker text-ivory-mute mb-2;
+  }
+
+  /* ── Data display ────────────────────────────────────────────── */
+
+  .ledger-table {
+    @apply w-full text-[13px];
+  }
+  .ledger-table th {
+    @apply kicker text-left px-4 py-2.5 border-b border-line font-medium;
+  }
+  .ledger-table td {
+    @apply px-4 py-2.5 border-b border-line/60 align-middle;
+  }
+  .ledger-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+  .ledger-table tbody tr {
+    @apply transition-colors hover:bg-ink-raised;
+  }
+
+  .mono-num {
+    @apply font-mono;
+    font-variant-numeric: tabular-nums;
   }
 }

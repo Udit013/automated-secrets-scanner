@@ -1,25 +1,36 @@
 import { clsx } from 'clsx'
 import type { ScanStatus } from '../api/client'
 
-const MAP: Record<ScanStatus, string> = {
-  queued: 'bg-gray-800 text-gray-400 border-gray-700',
-  running: 'bg-[#58A6FF]/10 text-[#58A6FF] border-[#58A6FF]/40',
-  completed: 'bg-[#3FB950]/10 text-[#3FB950] border-[#3FB950]/40',
-  failed: 'bg-[#F85149]/10 text-[#F85149] border-[#F85149]/40',
+const LABEL: Record<ScanStatus, string> = {
+  queued: 'queued',
+  running: 'running',
+  completed: 'complete',
+  failed: 'failed',
 }
 
+/** Status as annotated text, not a pill. Running state carries the pulse. */
 export function StatusBadge({ status }: { status: ScanStatus }) {
   return (
     <span
       className={clsx(
-        'inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium border capitalize',
-        MAP[status],
+        'inline-flex items-center gap-1.5 text-2xs font-mono',
+        status === 'failed' && 'text-sev-critical',
+        status === 'completed' && 'text-ivory-dim',
+        status === 'running' && 'text-ivory',
+        status === 'queued' && 'text-ivory-mute',
       )}
     >
-      {status === 'running' && (
-        <span className="h-1.5 w-1.5 rounded-full bg-[#58A6FF] animate-pulse" />
-      )}
-      {status}
+      <span
+        className={clsx(
+          'h-1.5 w-1.5 rounded-full',
+          status === 'running' && 'bg-ivory animate-pulse',
+          status === 'completed' && 'bg-ok',
+          status === 'failed' && 'bg-sev-critical',
+          status === 'queued' && 'bg-ivory-mute',
+        )}
+        aria-hidden
+      />
+      {LABEL[status]}
     </span>
   )
 }

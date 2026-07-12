@@ -1,21 +1,22 @@
+import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { format } from 'date-fns'
 import { getScan, getFindings, getScanDiff, exportUrl } from '../api/client'
-import { SeverityBadge } from '../components/SeverityBadge'
+import { SeverityBadge, SEV_COLOR, SEV_ORDER } from '../components/SeverityBadge'
 import { StatusBadge } from '../components/StatusBadge'
 import { RiskBadge, RiskMeter } from '../components/RiskBadge'
 import { LifecycleTimeline } from '../components/LifecycleTimeline'
 import { DiffSummary } from '../components/DiffSummary'
-import { format } from 'date-fns'
-import { useState } from 'react'
-import {
-  Download, ChevronDown, ChevronRight, ArrowLeft, GitCommit,
-  File, Clock, Database, FileCode2, FileDiff,
-} from 'lucide-react'
-import type { Finding, Severity } from '../api/client'
 import { clsx } from 'clsx'
+import type { Finding, Severity } from '../api/client'
 
-const SEVERITIES: Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
+const EXPORTS = [
+  { fmt: 'json' as const, label: 'JSON' },
+  { fmt: 'csv' as const, label: 'CSV' },
+  { fmt: 'sarif' as const, label: 'SARIF' },
+  { fmt: 'patch' as const, label: 'Patch' },
+]
 
 export function ScanDetail() {
   const { id } = useParams<{ id: string }>()
@@ -25,18 +26,13 @@ export function ScanDetail() {
   const { data: scan } = useQuery({
     queryKey: ['scan', id],
     queryFn: () => getScan(id!),
-    refetchInterval: (q) =>
-      q.state.data?.status === 'running' ? 3000 : false,
+    refetchInterval: (q) => (q.state.data?.status === 'running' ? 3000 : false),
     enabled: !!id,
   })
 
   const { data: findings } = useQuery({
-    queryKey: ['findings', id, severityFilter],
-    queryFn: () =>
-      getFindings(id!, {
-        severity: severityFilter || undefined,
-        limit: 500,
-      }),
+    queryKey: ['findings', id],
+    queryFn: () => getFindings(id!, { limit: 500 }),
     enabled: !!id && scan?.status === 'completed',
   })
 
@@ -46,98 +42,71 @@ export function ScanDetail() {
     enabled: !!id && scan?.status === 'completed',
   })
 
-  if (!scan) return <div className="text-gray-500 animate-pulse text-sm">Loading…</div>
+  if (!scan) {
+    return <p className="text-2xs font-mono text-ivory-mute animate-pulse py-12">loading report…</p>
+  }
 
-  const toggle = (fid: string) => {
+  const toggle = (fid: string) =>
     setExpanded((prev) => {
       const next = new Set(prev)
       next.has(fid) ? next.delete(fid) : next.add(fid)
       return next
     })
-  }
 
-  const grouped = groupByFile(findings ?? [])
+  const all = findings ?? []
+  const visible = severityFilter ? all.filter((f) => f.severity === severityFilter) : all
+  const grouped = groupByFile(visible)
+  const counts = Object.fromEntries(
+    SEV_ORDER.map((s) => [s, all.filter((f) => f.severity === s).length]),
+  ) as Record<Severity, number>
 
   return (
-    <div className="space-y-5 max-w-5xl">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Link to="/history" className="text-gray-500 hover:text-gray-300 transition-colors">
-          <ArrowLeft size={16} />
+    <div>
+      {/* Report header */}
+      <div className="pb-5">
+        <Link to="/history" className="text-2xs text-ivory-mute hover:text-ivory transition-colors">
+          ← scans
         </Link>
-        <h1 className="text-xl font-bold text-white flex-1">Scan Details</h1>
-        <div className="flex gap-2 flex-wrap">
-          <a href={exportUrl(id!, 'json')} download className="btn-secondary text-xs flex items-center gap-1">
-            <Download size={13} /> JSON
-          </a>
-          <a href={exportUrl(id!, 'csv')} download className="btn-secondary text-xs flex items-center gap-1">
-            <Download size={13} /> CSV
-          </a>
-          <a href={exportUrl(id!, 'sarif')} download className="btn-secondary text-xs flex items-center gap-1"
-             title="SARIF 2.1.0 — GitHub Advanced Security compatible">
-            <FileCode2 size={13} /> SARIF
-          </a>
-          <a href={exportUrl(id!, 'patch')} download className="btn-secondary text-xs flex items-center gap-1"
-             title="Remediation patch (env-var replacements)">
-            <FileDiff size={13} /> Patch
-          </a>
+        <div className="flex flex-wrap items-end justify-between gap-4 mt-2">
+          <div className="min-w-0">
+            <p className="kicker mb-1">Scan report</p>
+            <h1 className="page-title font-mono text-[18px] truncate max-w-xl" title={scan.source_ref}>
+              {scan.source_ref.replace('https://github.com/', '')}
+            </h1>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="kicker mr-2">export</span>
+            {EXPORTS.map(({ fmt, label }) => (
+              <a key={fmt} href={exportUrl(id!, fmt)} download className="btn-outline h-7 px-2.5 text-2xs">
+                {label}
+              </a>
+            ))}
+          </div>
         </div>
+
+        {/* Meta line */}
+        <dl className="flex flex-wrap gap-x-8 gap-y-1 mt-4">
+          <Meta term="status"><StatusBadge status={scan.status} /></Meta>
+          <Meta term="files">
+            <span className="font-mono text-2xs text-ivory-dim tabular-nums">{scan.files_scanned}</span>
+          </Meta>
+          <Meta term="completed">
+            <span className="font-mono text-2xs text-ivory-dim">
+              {scan.completed_at ? format(new Date(scan.completed_at), 'MMM d, yyyy · HH:mm') : '—'}
+            </span>
+          </Meta>
+          <Meta term="id">
+            <span className="font-mono text-2xs text-ivory-mute">{scan.id.slice(0, 8)}</span>
+          </Meta>
+        </dl>
       </div>
 
-      {/* Meta card */}
-      <div className="card grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-        <MetaItem icon={<Database size={13} />} label="Source" value={scan.source_ref} truncate />
-        <MetaItem icon={<StatusBadge status={scan.status} />} label="Status" value="" />
-        <MetaItem icon={<File size={13} />} label="Files Scanned" value={String(scan.files_scanned)} />
-        <MetaItem
-          icon={<Clock size={13} />}
-          label="Completed"
-          value={scan.completed_at ? format(new Date(scan.completed_at), 'MMM d, HH:mm') : '—'}
-        />
-      </div>
-
-      {/* Differential scan summary */}
-      {scan.status === 'completed' && diff && <DiffSummary diff={diff} />}
-
-      {/* Severity summary */}
-      {scan.status === 'completed' && (
-        <div className="flex flex-wrap gap-3">
-          {SEVERITIES.map((sev) => {
-            const count = (findings ?? []).filter((f) => f.severity === sev).length
-            return (
-              <button
-                key={sev}
-                onClick={() => setSeverityFilter(severityFilter === sev ? '' : sev)}
-                className={clsx(
-                  'flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm transition-colors',
-                  severityFilter === sev
-                    ? 'border-brand-500 bg-brand-500/10'
-                    : 'border-gray-700 bg-gray-900 hover:border-gray-500',
-                )}
-              >
-                <SeverityBadge severity={sev} />
-                <span className="text-gray-300 font-mono">{count}</span>
-              </button>
-            )
-          })}
-          {severityFilter && (
-            <button
-              onClick={() => setSeverityFilter('')}
-              className="text-xs text-gray-500 hover:text-gray-300 transition-colors px-2"
-            >
-              Clear filter
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Findings */}
       {scan.status === 'running' && (
-        <div className="card text-center py-10">
-          <div className="text-gray-400 animate-pulse">Scan in progress… {scan.progress}%</div>
-          <div className="mt-3 w-full bg-gray-800 rounded-full h-2">
+        <div className="rule pt-8 pb-10 text-center">
+          <p className="font-mono text-2xs text-ivory-dim mb-3">scanning… {scan.progress}%</p>
+          <div className="mx-auto max-w-sm h-[3px] rounded-full bg-line overflow-hidden">
             <div
-              className="bg-brand-500 h-2 rounded-full transition-all"
+              className="h-full bg-ivory transition-[width] duration-300"
               style={{ width: `${scan.progress}%` }}
             />
           </div>
@@ -145,156 +114,208 @@ export function ScanDetail() {
       )}
 
       {scan.status === 'failed' && (
-        <div className="card border-red-800 bg-red-900/10 text-red-400">
-          Scan failed: {scan.error_message}
+        <div className="rule pt-6">
+          <p className="text-2xs font-mono text-sev-critical">scan failed — {scan.error_message}</p>
         </div>
       )}
 
-      {scan.status === 'completed' && (findings ?? []).length === 0 && (
-        <div className="card text-center py-10 text-green-400">
-          ✓ No secrets detected
-        </div>
-      )}
+      {scan.status === 'completed' && (
+        <>
+          {diff && (
+            <div className="rule pt-5 pb-6">
+              <DiffSummary diff={diff} />
+            </div>
+          )}
 
-      {/* Grouped by file */}
-      {Object.entries(grouped).map(([filePath, fileFindings]) => (
-        <div key={filePath} className="card p-0 overflow-hidden">
-          <div className="px-4 py-3 bg-gray-800/50 flex items-center gap-2 border-b border-gray-800">
-            <File size={13} className="text-gray-500" />
-            <span className="text-sm font-mono text-gray-300 flex-1">{filePath}</span>
-            <span className="text-xs text-gray-500">{fileFindings.length} finding(s)</span>
+          {/* Severity filter strip */}
+          <div className="rule pt-4 pb-4 flex flex-wrap items-center gap-2">
+            {SEV_ORDER.map((sev) => (
+              <button
+                key={sev}
+                onClick={() => setSeverityFilter(severityFilter === sev ? '' : sev)}
+                disabled={counts[sev] === 0}
+                aria-pressed={severityFilter === sev}
+                className={clsx(
+                  'inline-flex items-center gap-2 h-7 px-2.5 rounded-sm text-2xs transition-colors',
+                  'disabled:opacity-30 disabled:pointer-events-none',
+                  severityFilter === sev
+                    ? 'bg-ink-overlay ring-1 ring-line-strong'
+                    : 'hover:bg-ink-raised',
+                )}
+              >
+                <SeverityBadge severity={sev} />
+                <span className="font-mono text-ivory-dim tabular-nums">{counts[sev]}</span>
+              </button>
+            ))}
+            {severityFilter && (
+              <button
+                onClick={() => setSeverityFilter('')}
+                className="text-2xs text-ivory-mute hover:text-ivory ml-1 underline underline-offset-4"
+              >
+                clear
+              </button>
+            )}
+            <span className="ml-auto text-2xs font-mono text-ivory-mute">
+              {visible.length} of {all.length} shown
+            </span>
           </div>
-          <div className="divide-y divide-gray-800">
-            {fileFindings.map((f) => (
-              <FindingRow
-                key={f.id}
-                finding={f}
-                isOpen={expanded.has(f.id)}
-                onToggle={() => toggle(f.id)}
-              />
+
+          {all.length === 0 && (
+            <div className="pt-12 pb-10 text-center">
+              <p className="font-mono text-2xs text-ok mb-1">[ clean ]</p>
+              <p className="text-2xs text-ivory-mute">no secrets detected in this source</p>
+            </div>
+          )}
+
+          {/* Findings grouped by file */}
+          <div className="space-y-5">
+            {Object.entries(grouped).map(([filePath, fileFindings]) => (
+              <section key={filePath}>
+                <div className="flex items-center gap-3 py-2">
+                  <h2 className="font-mono text-2xs text-ivory truncate">{filePath}</h2>
+                  <span className="flex-1 rule" />
+                  <span className="text-2xs font-mono text-ivory-mute shrink-0">
+                    {fileFindings.length}
+                  </span>
+                </div>
+                <div className="panel overflow-hidden">
+                  {fileFindings.map((f, i) => (
+                    <FindingRow
+                      key={f.id}
+                      finding={f}
+                      first={i === 0}
+                      isOpen={expanded.has(f.id)}
+                      onToggle={() => toggle(f.id)}
+                    />
+                  ))}
+                </div>
+              </section>
             ))}
           </div>
-        </div>
-      ))}
+        </>
+      )}
     </div>
   )
 }
 
 function FindingRow({
   finding: f,
+  first,
   isOpen,
   onToggle,
 }: {
   finding: Finding
+  first: boolean
   isOpen: boolean
   onToggle: () => void
 }) {
+  const spine = SEV_COLOR[f.severity as Severity] ?? '#66645F'
   return (
-    <div>
+    <div
+      className={clsx(!first && 'border-t border-line/60')}
+      style={{ boxShadow: `inset 3px 0 0 ${spine}` }}
+    >
       <button
         onClick={onToggle}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-gray-800/30 transition-colors"
+        aria-expanded={isOpen}
+        className="w-full grid grid-cols-[7rem_1fr_auto_auto] items-center gap-3 pl-4 pr-4 py-2.5 text-left
+                   hover:bg-ink-overlay transition-colors"
       >
-        {isOpen ? (
-          <ChevronDown size={13} className="text-gray-500 flex-shrink-0" />
-        ) : (
-          <ChevronRight size={13} className="text-gray-500 flex-shrink-0" />
-        )}
         <SeverityBadge severity={f.severity} />
-        <span className="text-sm text-gray-300 font-medium flex-1">{f.secret_type}</span>
-        {f.is_in_history && (
-          <span className="flex items-center gap-1 text-xs text-brand-400" title="Found in git history">
-            <GitCommit size={11} /> history
-          </span>
-        )}
-        <span className="text-xs font-mono text-gray-600 ml-1 max-w-[180px] truncate hidden md:inline">
-          {f.matched_string}
+        <span className="min-w-0 flex items-baseline gap-3">
+          <span className="text-[13px] text-ivory truncate">{f.secret_type}</span>
+          <code className="hidden md:inline text-2xs text-ivory-mute truncate">{f.matched_string}</code>
         </span>
-        <span className="text-xs font-mono text-gray-500">:{f.line_number}</span>
+        <span className="font-mono text-2xs text-ivory-mute tabular-nums">
+          L{f.line_number}
+          {f.is_in_history && <span className="ml-2 text-sev-medium" title="Present in git history">◆ history</span>}
+        </span>
         <RiskBadge score={f.risk_score} />
       </button>
 
-      {isOpen && (
-        <div className="px-6 pb-4 space-y-3 bg-gray-950/40">
-          {/* Risk score + reasoning */}
-          <div className="flex flex-col md:flex-row md:items-center gap-4 pt-3 pb-1">
+      {/* Progressive disclosure with a measured grid transition */}
+      <div
+        className="grid transition-[grid-template-rows] duration-200"
+        style={{ gridTemplateRows: isOpen ? '1fr' : '0fr' }}
+      >
+        <div className="overflow-hidden">
+          <div className="px-4 pb-4 pt-1 space-y-4">
             <RiskMeter score={f.risk_score} />
+
             {f.risk_factors && f.risk_factors.length > 0 && (
-              <div className="flex-1">
-                <div className="text-xs text-gray-500 mb-1.5">Risk reasoning</div>
-                <ul className="flex flex-wrap gap-1.5">
+              <div>
+                <div className="kicker mb-1.5">Contributing factors</div>
+                <ul className="space-y-0.5">
                   {f.risk_factors.map((factor) => (
-                    <li
-                      key={factor}
-                      className="text-[11px] text-gray-300 bg-gray-800 border border-gray-700 rounded px-2 py-0.5"
-                    >
+                    <li key={factor} className="text-2xs text-ivory-dim flex gap-2">
+                      <span className="text-ivory-mute font-mono">·</span>
                       {factor}
                     </li>
                   ))}
                 </ul>
               </div>
             )}
+
+            <LifecycleTimeline finding={f} />
+
+            <dl className="space-y-2">
+              <Detail term="matched">
+                <code className="text-2xs text-ivory bg-ink-inset rounded-sm px-1.5 py-0.5">
+                  {f.matched_string}
+                </code>
+              </Detail>
+              <Detail term="entropy">
+                <span className="font-mono text-2xs text-ivory-dim">{f.entropy} bits</span>
+              </Detail>
+              <Detail term="confidence">
+                <span className="text-2xs text-ivory-dim lowercase">{f.confidence}</span>
+              </Detail>
+              {f.commit_hash && (
+                <Detail term="commit">
+                  <code className="font-mono text-2xs text-ivory-dim">{f.commit_hash.slice(0, 12)}</code>
+                </Detail>
+              )}
+              <Detail term="context">
+                <pre className="well text-2xs text-ivory-dim px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all">
+                  {f.context}
+                </pre>
+              </Detail>
+            </dl>
+
+            {f.remediation && (
+              <div>
+                <div className="kicker mb-1.5">Remediation</div>
+                <ol className="space-y-1">
+                  {f.remediation.split('\n').filter(Boolean).map((step, i) => (
+                    <li key={i} className="text-2xs text-ivory-dim flex gap-2">
+                      <span className="font-mono text-ok shrink-0">{String(i + 1).padStart(2, '0')}</span>
+                      {step.replace(/^\d+\.\s*/, '')}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
           </div>
-
-          {/* Lifecycle timeline (git history only) */}
-          <LifecycleTimeline finding={f} />
-
-          <InfoRow label="Matched" value={<code className="text-[#FF7B72] text-xs bg-gray-800 px-2 py-0.5 rounded">{f.matched_string}</code>} />
-          <InfoRow label="Entropy" value={<span className="text-xs font-mono text-[#D29922]">{f.entropy}</span>} />
-          <InfoRow label="Confidence" value={<span className="text-xs text-gray-300">{f.confidence}</span>} />
-          {f.commit_hash && (
-            <InfoRow label="Commit" value={<code className="text-brand-400 text-xs">{f.commit_hash}</code>} />
-          )}
-          <InfoRow
-            label="Context"
-            value={
-              <pre className="text-xs text-gray-400 bg-gray-800 rounded px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all">
-                {f.context}
-              </pre>
-            }
-          />
-          {f.remediation && (
-            <div>
-              <div className="text-xs text-gray-500 font-medium mb-1">Remediation</div>
-              <pre className="text-xs text-green-400 bg-gray-800 rounded px-3 py-2 whitespace-pre-wrap">
-                {f.remediation}
-              </pre>
-            </div>
-          )}
         </div>
-      )}
+      </div>
     </div>
   )
 }
 
-function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
+function Meta({ term, children }: { term: string; children: React.ReactNode }) {
   return (
-    <div className="flex gap-4 items-start">
-      <span className="text-xs text-gray-500 w-20 flex-shrink-0 pt-0.5">{label}</span>
-      <div className="flex-1 min-w-0">{value}</div>
+    <div className="flex items-center gap-2">
+      <dt className="kicker">{term}</dt>
+      <dd>{children}</dd>
     </div>
   )
 }
 
-function MetaItem({
-  icon,
-  label,
-  value,
-  truncate,
-}: {
-  icon: React.ReactNode
-  label: string
-  value: string
-  truncate?: boolean
-}) {
+function Detail({ term, children }: { term: string; children: React.ReactNode }) {
   return (
-    <div>
-      <div className="text-xs text-gray-500 flex items-center gap-1 mb-1">
-        {icon} {label}
-      </div>
-      <div className={clsx('text-sm text-gray-300', truncate && 'truncate')} title={value}>
-        {value || '—'}
-      </div>
+    <div className="grid grid-cols-[6rem_1fr] gap-3 items-start">
+      <dt className="kicker pt-0.5">{term}</dt>
+      <dd className="min-w-0">{children}</dd>
     </div>
   )
 }
@@ -304,7 +325,6 @@ function groupByFile(findings: Finding[]): Record<string, Finding[]> {
   for (const f of findings) {
     ;(groups[f.file_path] ??= []).push(f)
   }
-  // Highest exposure risk first within each file.
   for (const list of Object.values(groups)) {
     list.sort((a, b) => b.risk_score - a.risk_score)
   }
