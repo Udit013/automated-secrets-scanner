@@ -32,7 +32,7 @@ export function TopBar() {
           <Mark />
           <span className="leading-none">
             <span className="block text-[13px] font-semibold tracking-tight">
-              Secrets Scanner
+              CipherWatch
             </span>
             <span className="block text-[9px] font-mono uppercase tracking-kicker text-ivory-mute mt-0.5">
               ops console

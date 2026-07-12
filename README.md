@@ -1,6 +1,6 @@
-# Automated Secrets Scanner
+# CipherWatch
 
-> **Production-ready DevSecOps tool** for detecting hardcoded secrets in source code — combining regex pattern matching, Shannon entropy analysis, and semantic heuristics — with a real-time React dashboard, REST API, scan scheduling, and email alerting.
+> **Production-ready DevSecOps platform** for detecting hardcoded secrets in source code and git history — combining regex pattern matching, Shannon entropy analysis, and semantic heuristics — with exposure risk scoring, a real-time ops console, REST API, scan scheduling, and email alerting.
 
 **Live Demo:** [https://automated-secrets-scanner.vercel.app](https://automated-secrets-scanner.vercel.app)  
 **API Docs:** [https://secrets-scanner-api.onrender.com/docs](https://secrets-scanner-api.onrender.com/docs)

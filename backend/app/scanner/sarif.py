@@ -6,7 +6,7 @@ upload (the same format used by CodeQL). Each secret type becomes a rule;
 each finding becomes a result with a physical location and a fingerprint.
 """
 
-_TOOL_NAME = "Automated Secrets Scanner"
+_TOOL_NAME = "CipherWatch"
 _TOOL_VERSION = "2.0.0"
 _INFO_URI = "https://github.com/Udit013/automated-secrets-scanner"
 

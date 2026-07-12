@@ -10,7 +10,7 @@ export function Layout() {
       </main>
       <footer className="mx-auto max-w-page w-full px-6 py-5 border-t border-line/60">
         <p className="text-2xs font-mono text-ivory-mute">
-          secrets-scanner v2.1 · pattern + entropy + heuristics
+          cipherwatch v2.1 · pattern + entropy + heuristics
         </p>
       </footer>
     </div>
