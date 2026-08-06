@@ -16,14 +16,13 @@ async def get_stats(db: Annotated[AsyncSession, Depends(get_db)]):
     total_scans = (await db.execute(select(func.count(Scan.id)))).scalar_one()
     total_findings = (await db.execute(select(func.count(Finding.id)))).scalar_one()
 
-    sev_counts: dict[str, int] = {}
-    for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
-        count = (
-            await db.execute(
-                select(func.count(Finding.id)).where(Finding.severity == sev)
-            )
-        ).scalar_one()
-        sev_counts[sev] = count
+    # Single GROUP BY instead of one COUNT query per severity level.
+    sev_rows = (
+        await db.execute(
+            select(Finding.severity, func.count(Finding.id)).group_by(Finding.severity)
+        )
+    ).all()
+    sev_counts: dict[str, int] = {sev: count for sev, count in sev_rows}
 
     # By type
     type_rows = (
@@ -44,7 +43,6 @@ async def get_stats(db: Annotated[AsyncSession, Depends(get_db)]):
     ).scalars().all()
 
     # Findings over time (last 30 days, grouped by date)
-    from sqlalchemy import cast, Date, text
     date_rows = (
         await db.execute(
             select(

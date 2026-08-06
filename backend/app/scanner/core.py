@@ -3,6 +3,7 @@ Enhanced secrets scanning engine.
 Combines regex pattern matching, Shannon entropy analysis, and semantic heuristics.
 """
 
+import logging
 import re
 import math
 import os
@@ -14,6 +15,8 @@ from datetime import datetime
 
 from .patterns import PATTERNS, is_placeholder, is_test_file, SecretPattern
 from .risk import compute_risk_score
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -226,11 +229,13 @@ def scan_git_history(
     try:
         import git  # type: ignore
     except ImportError:
+        logger.error("GitPython is not installed — git-history scanning is unavailable")
         return [], 0
 
     try:
         repo = git.Repo(repo_path)
     except Exception:
+        logger.warning("Could not open git repo at %s for history scan", repo_path, exc_info=True)
         return [], 0
 
     # key -> aggregated lifecycle record

@@ -23,12 +23,12 @@ class Scan(Base):
     scan_git_history: Mapped[bool] = mapped_column(Boolean, default=False)
     max_commits: Mapped[int] = mapped_column(Integer, default=100)
     min_entropy: Mapped[float] = mapped_column(Float, default=3.5)
-    status: Mapped[str] = mapped_column(String(20), default="queued")  # queued|running|completed|failed
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)  # queued|running|completed|failed
     total_findings: Mapped[int] = mapped_column(Integer, default=0)
     files_scanned: Mapped[int] = mapped_column(Integer, default=0)
     progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     findings: Mapped[list["Finding"]] = relationship(
@@ -40,13 +40,15 @@ class Finding(Base):
     __tablename__ = "findings"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    scan_id: Mapped[str] = mapped_column(String(36), ForeignKey("scans.id", ondelete="CASCADE"))
+    scan_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("scans.id", ondelete="CASCADE"), index=True
+    )
     file_path: Mapped[str] = mapped_column(Text)
     line_number: Mapped[int] = mapped_column(Integer)
-    secret_type: Mapped[str] = mapped_column(String(60))
+    secret_type: Mapped[str] = mapped_column(String(60), index=True)
     matched_string: Mapped[str] = mapped_column(Text)
     entropy: Mapped[float] = mapped_column(Float)
-    severity: Mapped[str] = mapped_column(String(10))  # CRITICAL|HIGH|MEDIUM|LOW
+    severity: Mapped[str] = mapped_column(String(10), index=True)  # CRITICAL|HIGH|MEDIUM|LOW
     confidence: Mapped[str] = mapped_column(String(10))
     context: Mapped[str] = mapped_column(Text)
     commit_hash: Mapped[str | None] = mapped_column(String(40), nullable=True)

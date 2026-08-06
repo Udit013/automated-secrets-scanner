@@ -4,6 +4,7 @@ Downloads a repo as a zip archive (no git clone needed) via the GitHub API.
 """
 
 import io
+import logging
 import os
 import re
 import shutil
@@ -16,6 +17,8 @@ import httpx
 from .core import scan_directory, scan_git_history, Finding
 from ..config import settings
 
+logger = logging.getLogger(__name__)
+
 
 _GITHUB_REPO_RE = re.compile(
     r"github\.com[/:]([A-Za-z0-9_.\-]+)/([A-Za-z0-9_.\-]+?)(?:\.git)?/?$"
@@ -27,6 +30,21 @@ def parse_github_url(url: str) -> Optional[tuple[str, str]]:
     if m:
         return m.group(1), m.group(2)
     return None
+
+
+def _safe_extract(zf: zipfile.ZipFile, dest: str) -> None:
+    """
+    Extract a zip archive while rejecting "zip slip" entries — a member
+    path (e.g. containing `../`) that would resolve outside `dest` once
+    joined and normalized. Validated up front so a malicious member can
+    never cause a partial, already-escaped extraction.
+    """
+    dest_real = os.path.realpath(dest)
+    for member in zf.namelist():
+        member_path = os.path.realpath(os.path.join(dest, member))
+        if member_path != dest_real and not member_path.startswith(dest_real + os.sep):
+            raise ValueError(f"Unsafe path in archive entry: {member!r}")
+    zf.extractall(dest)
 
 
 async def scan_github_repo(
@@ -56,7 +74,7 @@ async def scan_github_repo(
             await progress_callback(10, "Downloaded repository archive")
 
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            zf.extractall(tmpdir)
+            _safe_extract(zf, tmpdir)
 
         if progress_callback:
             await progress_callback(20, "Extracted repository")
@@ -82,12 +100,11 @@ async def scan_github_repo(
                 import git as gitlib  # type: ignore
                 clone_dir = tempfile.mkdtemp(prefix="secrets_clone_")
                 try:
-                    clone_kwargs = {"depth": max_commits} if not scan_git_history_flag else {}
                     gitlib.Repo.clone_from(
                         f"https://github.com/{owner}/{repo}.git",
                         clone_dir,
                         no_checkout=False,
-                        multi_options=["--depth={}".format(max_commits)],
+                        multi_options=[f"--depth={max_commits}"],
                     )
                     hist_findings, hist_files = scan_git_history(clone_dir, max_commits, min_entropy)
                     findings.extend(hist_findings)
@@ -95,7 +112,13 @@ async def scan_github_repo(
                 finally:
                     shutil.rmtree(clone_dir, ignore_errors=True)
             except Exception:
-                pass
+                # Git history is best-effort on top of the (already-returned)
+                # current-tree results — log so failures are visible in
+                # server logs without failing the whole scan.
+                logger.warning(
+                    "Git-history scan failed for %s/%s; returning current-tree findings only",
+                    owner, repo, exc_info=True,
+                )
 
         if progress_callback:
             await progress_callback(95, "Finalising results")

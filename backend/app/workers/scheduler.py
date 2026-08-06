@@ -25,9 +25,8 @@ def stop_scheduler():
 
 async def _run_scheduled_scan(schedule_id: str, source_type: str, source_ref: str):
     from ..database import AsyncSessionLocal
-    from ..models import ScanSchedule, Scan
+    from ..models import ScanSchedule, Scan, utcnow_naive
     from ..routers.scans import _run_scan
-    from datetime import datetime
 
     async with AsyncSessionLocal() as db:
         schedule = await db.get(ScanSchedule, schedule_id)
@@ -44,7 +43,7 @@ async def _run_scheduled_scan(schedule_id: str, source_type: str, source_ref: st
         await db.refresh(scan)
         scan_id = scan.id
 
-        schedule.last_run_at = datetime.utcnow()
+        schedule.last_run_at = utcnow_naive()
         schedule.last_scan_id = scan_id
         await db.commit()
 

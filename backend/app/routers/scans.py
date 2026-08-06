@@ -41,6 +41,21 @@ async def _broadcast(scan_id: str, payload: dict):
         sockets.remove(d)
 
 
+async def _close_scan_sockets(scan_id: str):
+    """
+    Call once a scan reaches a terminal state (completed/failed): nothing
+    will ever be broadcast for this scan_id again, so close any sockets
+    still listening and drop the registry entry — otherwise `_ws_registry`
+    grows by one entry per scan ever run, for the life of the process.
+    """
+    sockets = _ws_registry.pop(scan_id, [])
+    for ws in sockets:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
 async def _run_scan(scan_id: str):
     from ..database import AsyncSessionLocal
 
@@ -116,6 +131,7 @@ async def _run_scan(scan_id: str):
             "total_findings": len(findings),
             "files_scanned": files_scanned,
         })
+        await _close_scan_sockets(scan_id)
 
         # Email alert for critical findings
         critical = sum(1 for f in findings if f.severity == "CRITICAL")
@@ -136,6 +152,7 @@ async def _run_scan(scan_id: str):
                 scan.completed_at = utcnow_naive()
                 await db.commit()
         await _broadcast(scan_id, {"event": "failed", "error": str(e)})
+        await _close_scan_sockets(scan_id)
 
 
 @router.post("", response_model=ScanListItem, status_code=202)
@@ -282,12 +299,22 @@ async def delete_scan(scan_id: str, db: Annotated[AsyncSession, Depends(get_db)]
 
 @router.websocket("/ws/{scan_id}")
 async def scan_websocket(websocket: WebSocket, scan_id: str):
+    """
+    Push-only progress channel: the server broadcasts scan events, the
+    client never sends anything. We still `receive()` in a loop because
+    that is what surfaces the disconnect — sleeping instead would leave
+    this coroutine (and its socket) alive until the process exits.
+    """
     await websocket.accept()
     _ws_registry.setdefault(scan_id, []).append(websocket)
     try:
         while True:
-            await asyncio.sleep(30)
-    except WebSocketDisconnect:
+            await websocket.receive_text()
+    except Exception:
+        # Normal close, client disconnect, or a server-side close from
+        # _close_scan_sockets — all end the connection the same way.
+        pass
+    finally:
         sockets = _ws_registry.get(scan_id, [])
         if websocket in sockets:
             sockets.remove(websocket)

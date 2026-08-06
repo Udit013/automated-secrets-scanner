@@ -3,18 +3,22 @@ Email notifications for CRITICAL severity findings.
 Uses aiosmtplib (async SMTP). Silently skips if SMTP is not configured.
 """
 
+import logging
+
 import aiosmtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 from .config import settings
 
+logger = logging.getLogger(__name__)
+
 
 async def send_critical_alert(scan_id: str, critical_count: int, source_ref: str) -> None:
     if not all([settings.SMTP_USER, settings.SMTP_PASSWORD, settings.ALERT_EMAIL]):
         return
 
-    subject = f"[CRITICAL] {critical_count} critical secret(s) detected — Secrets Scanner"
+    subject = f"[CRITICAL] {critical_count} critical secret(s) detected — CipherWatch"
     body = f"""
     <h2>Critical Secrets Detected</h2>
     <p>Scan ID: <code>{scan_id}</code></p>
@@ -24,7 +28,7 @@ async def send_critical_alert(scan_id: str, critical_count: int, source_ref: str
         {settings.BACKEND_URL}/api/v1/scans/{scan_id}
     </a></p>
     <hr>
-    <p><small>Automated Secrets Scanner — DevSecOps Dashboard</small></p>
+    <p><small>CipherWatch — Secret Exposure Console</small></p>
     """
 
     msg = MIMEMultipart("alternative")
@@ -43,4 +47,6 @@ async def send_critical_alert(scan_id: str, critical_count: int, source_ref: str
             start_tls=True,
         )
     except Exception:
-        pass  # Notification failure must not crash the scan
+        # Notification failure must not crash the scan — but still log it
+        # so a misconfigured SMTP setup is visible in server logs.
+        logger.warning("Failed to send critical-finding alert email for scan %s", scan_id, exc_info=True)
