@@ -50,8 +50,8 @@ frontend/.env
 # Docker
 .dockerenv
 
-# Claude Code
-.claude/
-
 # Virtual environments
 backend/.venv/
+
+# Personal notes kept beside the code — never commit
+knowledge_doc.md

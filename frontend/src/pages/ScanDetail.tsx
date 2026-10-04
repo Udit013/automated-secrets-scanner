@@ -209,7 +209,7 @@ function FindingRow({
   isOpen: boolean
   onToggle: () => void
 }) {
-  const spine = SEV_COLOR[f.severity as Severity] ?? '#66645F'
+  const spine = SEV_COLOR[f.severity as Severity] ?? '#888681'
   return (
     <div
       className={clsx(!first && 'border-t border-line/60')}

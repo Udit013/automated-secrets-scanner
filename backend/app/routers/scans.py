@@ -3,6 +3,7 @@ Scan management endpoints + WebSocket for live progress.
 """
 
 import asyncio
+import hashlib
 import json
 from typing import Annotated
 
@@ -27,6 +28,41 @@ router = APIRouter(prefix="/scans", tags=["scans"])
 
 # In-memory registry: scan_id -> list of connected websockets
 _ws_registry: dict[str, list[WebSocket]] = {}
+
+# Strong references to fire-and-forget tasks; asyncio only keeps weak ones,
+# so an unreferenced task can be garbage-collected before it finishes.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def paste_label(content: str) -> str:
+    """
+    Stable, non-reversible stand-in for pasted content. Pasted text is full
+    of the very secrets being scanned for, so it is never persisted — the
+    digest still lets re-scans of identical content find each other as a
+    differential baseline.
+    """
+    return "paste:" + hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+
+
+async def mark_interrupted_scans() -> int:
+    """
+    Scans run as in-process background tasks, so a restart abandons any
+    that were mid-flight. Run at startup to fail them explicitly instead
+    of leaving them reported as running forever.
+    """
+    from ..database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        stale = (
+            await db.execute(select(Scan).where(Scan.status.in_(("queued", "running"))))
+        ).scalars().all()
+        for scan in stale:
+            scan.status = "failed"
+            scan.error_message = "Interrupted by a server restart; run the scan again."
+            scan.progress = 100
+            scan.completed_at = utcnow_naive()
+        await db.commit()
+        return len(stale)
 
 
 async def _broadcast(scan_id: str, payload: dict):
@@ -56,7 +92,7 @@ async def _close_scan_sockets(scan_id: str):
             pass
 
 
-async def _run_scan(scan_id: str):
+async def _run_scan(scan_id: str, paste_content: str | None = None):
     from ..database import AsyncSessionLocal
 
     async with AsyncSessionLocal() as db:
@@ -77,7 +113,13 @@ async def _run_scan(scan_id: str):
             scan = await db.get(Scan, scan_id)
 
             if scan.source_type == "paste":
-                findings = scan_text(scan.source_ref, "paste", scan.min_entropy)
+                if paste_content is None:
+                    raise ValueError("Pasted content is not retained; submit it again.")
+                # Scanning is CPU-bound; a worker thread keeps the event loop
+                # free for other requests and progress broadcasts.
+                findings = await asyncio.to_thread(
+                    scan_text, paste_content, "paste", scan.min_entropy
+                )
                 files_scanned = 1
                 await _broadcast(scan_id, {"event": "progress", "progress": 80})
 
@@ -138,9 +180,10 @@ async def _run_scan(scan_id: str):
         if critical > 0:
             async with AsyncSessionLocal() as db:
                 scan = await db.get(Scan, scan_id)
-                asyncio.create_task(
-                    send_critical_alert(scan_id, critical, scan.source_ref)
-                )
+                source = "pasted content" if scan.source_type == "paste" else scan.source_ref
+                task = asyncio.create_task(send_critical_alert(scan_id, critical, source))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
 
     except Exception as e:
         async with AsyncSessionLocal() as db:
@@ -161,9 +204,10 @@ async def start_scan(
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    is_paste = body.source_type == "paste"
     scan = Scan(
         source_type=body.source_type,
-        source_ref=body.source_ref,
+        source_ref=paste_label(body.source_ref) if is_paste else body.source_ref,
         scan_git_history=body.scan_git_history,
         max_commits=body.max_commits,
         min_entropy=body.min_entropy,
@@ -174,7 +218,8 @@ async def start_scan(
     scan_id = scan.id
     await db.commit()
 
-    background_tasks.add_task(_run_scan, scan_id)
+    # Pasted content travels only in memory, straight to the scan task.
+    background_tasks.add_task(_run_scan, scan_id, body.source_ref if is_paste else None)
     return scan
 
 

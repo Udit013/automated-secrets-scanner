@@ -16,7 +16,7 @@ export function DiffSummary({ diff }: { diff: ScanDiff }) {
   }
 
   const net = diff.net_change
-  const verdictColor = net < 0 ? '#57AB5A' : net > 0 ? '#F2545B' : '#66645F'
+  const verdictColor = net < 0 ? '#57AB5A' : net > 0 ? '#F2545B' : '#888681'
 
   return (
     <div className="panel">

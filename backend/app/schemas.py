@@ -1,8 +1,9 @@
 import re
 
+from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # Public API guardrails
 MAX_PASTE_BYTES = 512 * 1024  # 512 KB of pasted code is plenty
@@ -101,9 +102,47 @@ class StartScanRequest(BaseModel):
         return self
 
 
+MIN_SCHEDULE_INTERVAL = timedelta(minutes=15)
+
+
+def _validate_cron(expr: str) -> str:
+    """
+    Parse with the same trigger APScheduler will use, so a bad field value
+    is a 422 here rather than a 500 at registration. Also enforce a floor
+    on frequency: schedules run unattended against a public, unauthenticated
+    API, and an every-minute scan with history would monopolise the server.
+    """
+    parts = expr.strip().split()
+    if len(parts) != 5:
+        raise ValueError("cron_expression must have exactly 5 fields")
+    minute, hour, day, month, weekday = parts
+    try:
+        trigger = CronTrigger(
+            minute=minute, hour=hour, day=day, month=month,
+            day_of_week=weekday, timezone=timezone.utc,
+        )
+    except ValueError as e:
+        raise ValueError(f"Invalid cron expression: {e}") from None
+
+    # Sample upcoming fire times; the tightest gap is the effective interval.
+    fire = trigger.get_next_fire_time(None, datetime.now(timezone.utc))
+    for _ in range(24):
+        if fire is None:
+            break
+        nxt = trigger.get_next_fire_time(fire, fire)
+        if nxt is None:
+            break
+        if nxt - fire < MIN_SCHEDULE_INTERVAL:
+            raise ValueError("Schedules may run at most once every 15 minutes")
+        fire = nxt
+    return " ".join(parts)
+
+
 class ScheduleCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
-    source_type: str = Field(..., pattern="^(github|paste)$")
+    # Only repositories can be rescanned on a schedule; pasted content is
+    # never stored, so there would be nothing to rescan.
+    source_type: str = Field(..., pattern="^github$")
     source_ref: str
     cron_expression: str  # standard 5-field cron
     scan_git_history: bool = False
@@ -116,9 +155,7 @@ class ScheduleCreate(BaseModel):
     @field_validator("cron_expression")
     @classmethod
     def _check_cron(cls, v: str) -> str:
-        if len(v.strip().split()) != 5:
-            raise ValueError("cron_expression must have exactly 5 fields")
-        return v.strip()
+        return _validate_cron(v)
 
 
 class ScheduleOut(BaseModel):

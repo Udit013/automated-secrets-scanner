@@ -9,7 +9,7 @@ services:
       - key: DATABASE_URL
         value: sqlite+aiosqlite:///./secrets_scanner.db
       - key: CORS_ORIGINS
-        value: https://secrets-scanner.vercel.app,https://automated-secrets-scanner.vercel.app
+        value: https://cipherwatch-web.vercel.app,https://automated-secrets-scanner.vercel.app
       - key: GITHUB_TOKEN
         sync: false
       - key: SMTP_HOST

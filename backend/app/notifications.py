@@ -3,6 +3,7 @@ Email notifications for CRITICAL severity findings.
 Uses aiosmtplib (async SMTP). Silently skips if SMTP is not configured.
 """
 
+import html
 import logging
 
 import aiosmtplib
@@ -19,14 +20,15 @@ async def send_critical_alert(scan_id: str, critical_count: int, source_ref: str
         return
 
     subject = f"[CRITICAL] {critical_count} critical secret(s) detected — CipherWatch"
+    # source_ref is user-supplied — escape it so it can't inject markup or
+    # links into an email sent from a trusted address.
+    report_url = html.escape(f"{settings.BACKEND_URL}/api/v1/scans/{scan_id}", quote=True)
     body = f"""
     <h2>Critical Secrets Detected</h2>
-    <p>Scan ID: <code>{scan_id}</code></p>
-    <p>Source: <code>{source_ref}</code></p>
+    <p>Scan ID: <code>{html.escape(scan_id)}</code></p>
+    <p>Source: <code>{html.escape(source_ref)}</code></p>
     <p><strong>{critical_count} CRITICAL severity finding(s)</strong> were detected.</p>
-    <p>Review the full report: <a href="{settings.BACKEND_URL}/api/v1/scans/{scan_id}">
-        {settings.BACKEND_URL}/api/v1/scans/{scan_id}
-    </a></p>
+    <p>Review the full report: <a href="{report_url}">{report_url}</a></p>
     <hr>
     <p><small>CipherWatch — Secret Exposure Console</small></p>
     """

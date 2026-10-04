@@ -27,7 +27,7 @@ export default {
       ivory: {
         DEFAULT: '#ECEAE6', // primary text & interactive accent
         dim: '#A8A5A0', // secondary text
-        mute: '#66645F', // tertiary / disabled
+        mute: '#888681', // tertiary — 4.5:1+ on every ink surface (WCAG AA)
         faint: '#3E3D39', // decorative glyphs
       },
 

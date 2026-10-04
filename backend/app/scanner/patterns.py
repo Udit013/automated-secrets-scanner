@@ -291,7 +291,10 @@ PATTERNS: List[SecretPattern] = [
 
 PLACEHOLDER_PATTERNS = [
     r"(xxx|XXX){3,}",
-    r"(?i)\b(example|sample|demo|fake|mock|dummy|placeholder|changeme|change.?me|test)",
+    # "example" needs no word boundary: vendor docs embed it mid-token
+    # (AWS's own AKIAIOSFODNN7EXAMPLE). The other words keep the boundary
+    # so real keys like Stripe's sk_test_... are not suppressed.
+    r"(?i)(example|\b(sample|demo|fake|mock|dummy|placeholder|changeme|change.?me|test))",
     r"(?i)your.{0,5}(key|token|secret|password|api|value|credential)",
     r"(?i)(key|token|secret|password).{0,5}here\b",
     r"<[^>]{3,}>",

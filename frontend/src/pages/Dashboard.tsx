@@ -126,7 +126,7 @@ export function Dashboard() {
                   <td className="text-right">
                     <span
                       className="font-mono text-2xs tabular-nums"
-                      style={{ color: s.total_findings > 0 ? '#ECEAE6' : '#66645F' }}
+                      style={{ color: s.total_findings > 0 ? '#ECEAE6' : '#888681' }}
                     >
                       {s.total_findings}
                     </span>

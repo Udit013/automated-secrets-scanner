@@ -106,6 +106,9 @@ def scan_text(
         if is_comment or is_block_comment or is_sql_comment:
             continue
 
+        line_findings: list[Finding] = []
+        raw_secrets: list[str] = []
+
         for pattern in PATTERNS:
             for match in re.finditer(pattern.regex, line, re.IGNORECASE):
                 # Use the full match as the secret; only override with a group
@@ -136,7 +139,8 @@ def scan_text(
                     entropy=entropy,
                 )
 
-                findings.append(
+                raw_secrets.append(matched_text)
+                line_findings.append(
                     Finding(
                         file_path=file_path,
                         line_number=line_num,
@@ -145,7 +149,7 @@ def scan_text(
                         entropy=round(entropy, 2),
                         severity=severity,
                         confidence=confidence,
-                        context=line.strip()[:200],
+                        context="",
                         commit_hash=commit_hash,
                         remediation=pattern.remediation,
                         is_in_history=is_history,
@@ -154,7 +158,22 @@ def scan_text(
                     )
                 )
 
+        if line_findings:
+            # The source line is persisted and exported, so every secret
+            # detected on it is masked — not just the one a finding is about.
+            context = _mask_secrets_in(stripped, raw_secrets)[:200]
+            for f in line_findings:
+                f.context = context
+            findings.extend(line_findings)
+
     return findings
+
+
+def _mask_secrets_in(text: str, secrets: list[str]) -> str:
+    # Longest first, so a secret that contains another is masked whole.
+    for secret in sorted(set(secrets), key=len, reverse=True):
+        text = text.replace(secret, _mask(secret))
+    return text
 
 
 def _downgrade(severity: str) -> str:

@@ -3,12 +3,15 @@ APScheduler-based recurring scan scheduler.
 Uses AsyncIOScheduler with in-memory job store.
 """
 
-import asyncio
+import logging
 from datetime import datetime
 from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import select
+
+logger = logging.getLogger(__name__)
 
 _scheduler = AsyncIOScheduler()
 
@@ -83,6 +86,40 @@ def add_schedule(
 
     job = _scheduler.get_job(schedule_id)
     return _next_run_time(job)
+
+
+async def restore_schedules() -> int:
+    """
+    Re-register every stored schedule with the in-memory scheduler.
+
+    APScheduler's job store lives in process memory, so without this every
+    restart (or free-tier sleep/wake) silently drops all schedules while the
+    database and UI still report them as armed. Paused schedules are
+    registered too — otherwise re-enabling one later would have no job to
+    resume.
+    """
+    from ..database import AsyncSessionLocal
+    from ..models import ScanSchedule
+
+    restored = 0
+    async with AsyncSessionLocal() as db:
+        schedules = (await db.execute(select(ScanSchedule))).scalars().all()
+        for s in schedules:
+            if s.source_type != "github":
+                logger.warning("Skipping schedule %s: unsupported source type %r", s.id, s.source_type)
+                continue
+            try:
+                next_run = add_schedule(s.id, s.cron_expression, s.source_type, s.source_ref)
+            except ValueError:
+                logger.warning("Skipping schedule %s: invalid cron %r", s.id, s.cron_expression)
+                continue
+            if s.enabled:
+                s.next_run_at = next_run
+            else:
+                pause_schedule(s.id)
+            restored += 1
+        await db.commit()
+    return restored
 
 
 def _next_run_time(job) -> Optional[datetime]:
