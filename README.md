@@ -1,6 +1,6 @@
 # CipherWatch
 
-> **Production-ready DevSecOps platform** for detecting hardcoded secrets in source code and git history — combining regex pattern matching, Shannon entropy analysis, and semantic heuristics — with exposure risk scoring, a real-time ops console, REST API, scan scheduling, and email alerting.
+> **Production-ready DevSecOps platform** for detecting hardcoded secrets in source code and git history — combining regex pattern matching, Shannon entropy analysis, and placeholder filtering — with exposure risk scoring, a real-time ops console, REST API, scan scheduling, and email alerting.
 
 **Live Demo:** [https://automated-secrets-scanner.vercel.app](https://automated-secrets-scanner.vercel.app)  
 **API Docs:** [https://secrets-scanner-api.onrender.com/docs](https://secrets-scanner-api.onrender.com/docs)
@@ -43,8 +43,8 @@
 | Feature | Description |
 |---------|-------------|
 | **26 Secret Patterns** | AWS keys, GCP credentials, GitHub tokens, Stripe, Slack, Twilio, SendGrid, Discord, SSH/PGP private keys, JWTs, DB connection strings, Azure, npm/PyPI tokens |
-| **Shannon Entropy Analysis** | Flags high-entropy strings even without descriptive variable names (threshold configurable) |
-| **Semantic Heuristics** | Variable name analysis boosts confidence when surrounding context contains `key`, `secret`, `token`, `password` |
+| **Shannon Entropy Analysis** | Gates the 3 shape-less generic patterns (API key, secret, password) on randomness, so low-randomness values are dropped (threshold configurable) |
+| **No Raw Secret Retention** | Every detected secret is masked in stored context; pasted content is never persisted (only a SHA-256 digest label) |
 | **CRITICAL / HIGH / MEDIUM / LOW** | Severity scored by secret type, entropy level, and file context |
 | **False-Positive Suppression** | Placeholder detection (14 regex patterns + unique-char ratio), test-file severity downgrading, comment-line skipping |
 | **Exposure Risk Score** | Transparent 0–100 score per finding combining severity, Git-history presence, occurrences, exposure duration, and entropy — with human-readable reasoning |
@@ -261,9 +261,8 @@ fi
 
 Shannon entropy $H = -\sum p_i \log_2 p_i$ flags high-entropy strings that look like secrets even when variable names are non-descriptive. Default threshold: **3.5 bits** (configurable per request via `min_entropy`).
 
-### Semantic Heuristics
+### False-Positive Controls
 
-- **Variable-name boost** — confidence increases when surrounding context contains `key`, `secret`, `token`, `password`, or `credential`
 - **Test-file downgrading** — findings in `tests/`, `*.test.*`, `spec/`, or `fixtures/` are automatically demoted one severity level
 - **Comment skipping** — lines starting with `#`, `//`, `*`, `<!--` are skipped (with an exception for SSH key headers `-----BEGIN`)
 - **Placeholder detection** — 14 regex patterns + a unique-character-ratio check eliminate `YOUR_KEY_HERE`, `${API_KEY}`, `example_…`, `xxx…`, single-lowercase-word values
@@ -384,10 +383,10 @@ python seed_demo.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT
 
 ## Running Tests
 
-**75 tests** across two suites, run automatically in CI on every push.
+**95 tests** across two suites, run automatically in CI on every push.
 
 ```bash
-# Backend suite (56 tests): API integration + unit tests
+# Backend suite (76 tests): API integration, unit, and hardening regressions
 cd backend
 pip install -r requirements-dev.txt
 pytest tests/ -v
@@ -399,7 +398,8 @@ pytest test_scanner.py -v
 
 Coverage includes:
 - **API integration** — full paste-scan lifecycle over a real (throwaway) database: scan → findings → severity filters → diff → JSON/CSV/SARIF/patch exports → stats → delete
-- **Input validation** — GitHub URL allow-listing, paste size limits (512 KB), cron syntax, pagination clamps, out-of-range parameter rejection
+- **Input validation** — GitHub URL allow-listing, paste size limits (512 KB), cron syntax and field values, a 15-minute minimum schedule interval, pagination clamps, out-of-range parameter rejection
+- **Hardening regressions** — no raw secret in any API response or export, pasted content never persisted, interrupted scans failed and schedules restored at startup, zip-bomb and member-count limits, escaped alert email (each verified to fail against the pre-fix code)
 - **Risk scoring** — severity bases, git-history/occurrence/exposure/author/entropy bonuses, 100-point cap, reason strings for every point awarded
 - **SARIF** — schema/version, rule deduplication, severity→level mapping, locations, fingerprints
 - **Remediation** — env-var derivation, per-language replacements (Python/Node/Go/Ruby/PHP/.env), patch hunk grouping
@@ -409,14 +409,17 @@ Coverage includes:
 
 ## Performance Benchmarks
 
-| Metric | Value |
-|--------|-------|
-| Secret types covered | 26 |
-| Precision | ~95% |
-| Recall | ~94% |
-| F1 Score | ~0.94 |
-| False-positive rate | ~5% |
-| Scan speed (CLI) | ~1,000 files / sec |
+Measured on a laptop (single-threaded Python 3.14), not a server. Re-run before quoting them for other hardware.
+
+| Metric | Value | How it was measured |
+|--------|-------|--------------------|
+| Secret types covered | 26 | 8 CRITICAL · 17 HIGH · 1 MEDIUM patterns in `patterns.py` |
+| Detection throughput | ~96K lines/sec (~630 files/sec) | `scan_text` over this repo's own 12.4K-line source, median of 7 runs |
+| GitHub repo scan, end to end | ~1.3 s | `pallets/flask`, 101 files, download + extract + scan |
+| Git-history de-duplication | 1,351 matches → 82 findings | This repo's 14-commit history |
+| Max event-loop stall during a scan | ~25–30 ms | Down from 458 ms (current tree) and 21 s (with history) before scanning moved to worker threads |
+
+**On accuracy:** this repo has no labeled evaluation set large enough to support precision/recall figures. `evaluate_performance.py` exercises only 13 labeled secrets, so it is a smoke test rather than a benchmark.
 
 ---
 

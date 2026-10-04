@@ -151,7 +151,7 @@ automated-secrets-scanner/
 │   │   │   └── stats.py         # Dashboard aggregation query
 │   │   └── workers/
 │   │       └── scheduler.py     # APScheduler wrapper — cron job registration
-│   ├── tests/                   # 56 pytest tests (integration + unit)
+│   ├── tests/                   # 76 pytest tests (integration, unit, hardening regressions)
 │   ├── seed_demo.py             # Populates the DB with realistic demo data
 │   ├── requirements.txt         # Production dependencies
 │   ├── requirements-dev.txt     # + pytest, pytest-asyncio for CI
@@ -388,7 +388,7 @@ SecretPattern(
 
 The 26 covered credential types span AWS, GCP, GitHub (PAT/OAuth/App tokens), Stripe (live/test), Slack (bot/app tokens), Twilio, SendGrid, private SSH/PGP keys, JWTs, database connection strings (Postgres/MySQL/Mongo/Redis/MSSQL/Oracle), Azure (storage keys, SAS tokens), npm/PyPI publish tokens, Discord bot tokens, and Mailgun keys — plus three **generic, non-format-specific** catch-alls (Generic API Key, Generic Secret, Hardcoded Password) that rely on entropy rather than a fixed shape.
 
-**Placeholder detection** (`is_placeholder`) is what keeps precision usable — without it, every `API_KEY="your_key_here"` in a README would be flagged as a real leak. It runs 14 regex patterns (`example`, `${VAR}`, `<PLACEHOLDER>`, `xxx...`, ends with `_here`, etc.) plus two structural heuristics: strings shorter than 8 characters are rejected outright, and strings with a **unique-character ratio below 0.3** (fewer than 30% of characters are distinct — i.e., highly repetitive, like `"aaaaaaaaaa"`) are rejected as unlikely to be real secrets.
+**Placeholder detection** (`is_placeholder`) is what keeps precision usable — without it, every `API_KEY="your_key_here"` in a README would be flagged as a real leak. It runs 14 regex patterns (`example`, `${VAR}`, `<PLACEHOLDER>`, `xxx...`, ends with `_here`, etc.). Most placeholder words require a word boundary so real keys such as Stripe's `sk_test_…` are not suppressed, but `example` matches anywhere because vendor documentation embeds it mid-token — AWS's own sample key `AKIAIOSFODNN7EXAMPLE` would otherwise be reported as a CRITICAL leak. The rules run alongside two structural heuristics: strings shorter than 8 characters are rejected outright, and strings with a **unique-character ratio below 0.3** (fewer than 30% of characters are distinct — i.e., highly repetitive, like `"aaaaaaaaaa"`) are rejected as unlikely to be real secrets.
 
 **Test-file downgrading** (`is_test_file` + `_downgrade`) checks the file path against patterns like `/tests?/`, `.spec.`, `_test\.py` and, if matched, moves the severity one step down the ladder (`CRITICAL → HIGH → MEDIUM → LOW`, capped at `LOW`). A hardcoded password in `tests/fixtures.py` is real code smell but far less urgent than the same string in `payment/stripe.py`.
 
@@ -415,7 +415,8 @@ For each distinct character, compute its frequency `p = count / n`, then sum `-p
 
 - **Confidence** (`_confidence`) is a coarse `HIGH`/`MEDIUM`/`LOW` label derived from whether the match was pattern-based and how high its entropy is — pattern match + entropy > 4.5 = `HIGH`.
 - **Severity** comes directly from the matched `SecretPattern.severity`, then possibly downgraded for test files (§7.2).
-- **Masking** (`_mask`) never stores the real secret value. `AKIAV3WBCDEF4GHI7JKM` becomes `AKIA************7JKM` — the first and last four characters survive (enough for a human to recognize *which* secret this is if they're rotating it) but the middle is destroyed. This masked string is what gets written to the database and shown in the UI; the real value only ever exists transiently in memory during the single `scan_text()` call.
+- **Masking** (`_mask`) keeps the first and last four characters (`AKIAV3WBCDEF4GHI7JKM` → `AKIA************7JKM`) — enough to tell *which* credential to rotate, not enough to use it. It applies to two persisted fields: `matched_string`, and `context` (the source line). `context` masks *every* secret detected on that line (`_mask_secrets_in`), so a line holding two secrets never leaks the other one through either finding. For paste scans, the pasted text itself is never written to the database: `source_ref` stores `paste:<first 12 hex chars of its SHA-256>` and the content reaches the scan task only in memory. Identical pastes produce the same label, so re-scanning the same content still finds a differential baseline.
+  *History note:* before the October 2026 hardening pass, `context` stored the raw line and `source_ref` stored the full pasted content, so secrets were returned by the API and every export. Any database populated before that change still contains them.
 
 ### 7.5 Git history scanning — opt-in
 
@@ -513,12 +514,14 @@ def _validate_source(source_type: str, source_ref: str) -> str:
         raise ValueError(f"Pasted content exceeds 512 KB limit")
     return source_ref
 ```
-This is a **public-facing API with no authentication**, so it is hardened defensively: GitHub URLs are checked against a strict regex allow-list (`https://github.com/{owner}/{repo}`, normalizing away a trailing `.git` or `/`) rather than accepted as arbitrary strings, and pasted-code submissions are capped at 512 KB to prevent someone from submitting gigabytes of text as a denial-of-service vector. `ScheduleCreate` additionally validates that `cron_expression` has exactly 5 whitespace-separated fields via a `@field_validator`.
+This is a **public-facing API with no authentication**, so it is hardened defensively: GitHub URLs are checked against a strict regex allow-list (`https://github.com/{owner}/{repo}`, normalizing away a trailing `.git` or `/`) rather than accepted as arbitrary strings, and pasted-code submissions are capped at 512 KB to prevent someone from submitting gigabytes of text as a denial-of-service vector. `ScheduleCreate` is stricter still. It accepts only `github` sources (pasted content is never stored, so there is nothing to rescan). Its `cron_expression` is parsed with the same `CronTrigger` APScheduler uses, so an out-of-range field such as `99 * * * *` is rejected with a 422 instead of failing later as a 500. It also samples the next fire times and rejects anything that runs more often than **every 15 minutes**: schedules execute unattended against a public, unauthenticated API, and an every-minute history scan would monopolize the server.
 
 ### `backend/app/notifications.py`
 **Purpose:** sends a single HTML email via `aiosmtplib` (an async SMTP client — chosen, like everything else in this backend, so a slow network call to an external SMTP server never blocks the event loop) when a scan produces CRITICAL findings.
 **When it executes:** called (as a fire-and-forget `asyncio.create_task(...)`, not awaited directly) from `routers/scans.py` at the end of `_run_scan()`, only if `critical > 0`.
-**Fails safe:** wrapped in a bare `try/except: pass` — a broken SMTP config or a transient network failure must never crash or fail a scan; the scan result is already saved regardless of whether the email succeeds.
+**Fails safe:** the send is wrapped in `try/except` that logs a warning — a broken SMTP config or a transient network failure must never crash or fail a scan; the scan result is already saved regardless of whether the email succeeds.
+**Escapes user input:** the scan source is user-supplied, so it (and the scan id and report URL) pass through `html.escape` before going into the HTML body — otherwise a crafted source could inject markup or links into an email sent from a trusted address. Paste scans are labelled `pasted content` in the email; the pasted text itself is never included.
+**Task lifetime:** the caller keeps a strong reference to the `create_task` handle in a module-level set until it finishes, because asyncio holds only weak references to tasks and an unreferenced one can be garbage-collected mid-send.
 **Silently skips if unconfigured:** the function's first line checks `if not all([SMTP_USER, SMTP_PASSWORD, ALERT_EMAIL]): return` — so on a fresh deployment with no SMTP env vars set, this is simply a no-op, not an error.
 
 ### `backend/app/main.py`
@@ -526,16 +529,28 @@ This is a **public-facing API with no authentication**, so it is hardened defens
 ```python
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()          # runs once when the process starts
-    start_scheduler()        # boots the APScheduler background thread
-    yield                    # app serves requests here
-    stop_scheduler()         # graceful shutdown
+    await init_db()                                   # create missing tables
+    interrupted = await scans.mark_interrupted_scans()  # fail scans a restart cut off
+    start_scheduler()                                 # boot APScheduler
+    restored = await restore_schedules()              # rebuild jobs from the DB
+    yield                                             # app serves requests here
+    stop_scheduler()                                  # graceful shutdown
 ```
+The two reconciliation steps exist because both pieces of state they repair live only in process memory. Background scans die with the process, so `mark_interrupted_scans()` marks anything still `queued`/`running` as `failed` rather than reporting it as running forever. APScheduler's job store is also in memory, so without `restore_schedules()` every restart — and the free tier sleeps after 15 idle minutes — would silently drop every schedule while the database and UI still showed them armed.
 This is FastAPI's **lifespan context manager** pattern — code before `yield` runs at startup, code after runs at shutdown, replacing the older, separately-declared `@app.on_event("startup")`/`@app.on_event("shutdown")` handlers with a single readable block.
 **Also defines** the one route not inside a router: `GET /health`, used by the frontend's wake-up ping and by Render's own health checks.
 
 ### `backend/app/routers/scans.py`
 The largest and most important router — covered function-by-function in [§9](#9-rest-api-reference) and [§10](#10-websocket-real-time-progress). Owns: scan creation, listing, single-scan retrieval, findings listing/filtering, the diff endpoint, deletion, and the WebSocket endpoint. Also owns `_run_scan()`, the private async function that does the actual work of running a scan in the background (see the full trace in [§21.1](#211-launching-a-scan-the-complete-trace)).
+**Pasted content is never persisted.** `start_scan` stores `source_ref = paste_label(content)` — `paste:` plus the first 12 hex characters of the content's SHA-256 — and hands the content itself to `_run_scan` as an in-memory argument. Pasted text contains exactly the secrets being scanned for, and before this change it was stored whole and returned by `GET /scans`, the SARIF export, and the alert email. Identical pastes produce the same label, so re-scanning the same content still finds a differential baseline.
+**Scanning runs off the event loop.** `scan_text` is CPU-bound, so `_run_scan` calls it through `asyncio.to_thread`; otherwise one scan would freeze every other request, health check, and progress broadcast for its full duration.
+
+### `backend/app/scanner/github_scanner.py`
+**Purpose:** fetch a public GitHub repository and run the detection engine over it, optionally including git history.
+**Download:** the repository is fetched as a single zipball from the GitHub API (no `git clone` needed for the current tree) and **streamed to a temp file**, never held in memory. The stream aborts past `MAX_ARCHIVE_BYTES` (100 MB).
+**Extraction (`_safe_extract`):** before a single byte is decompressed, the zip's central directory is checked against `MAX_ARCHIVE_MEMBERS` (50,000 files) and `MAX_EXTRACTED_BYTES` (500 MB uncompressed — the zip-bomb guard), and every member path is resolved to confirm it stays inside the destination (the zip-slip guard). Validating everything first means a bad archive never leaves a partial extraction behind.
+**Concurrency:** extraction, the directory scan, and the history clone-and-walk all run via `asyncio.to_thread`. Measured on `pallets/flask`, this cut the longest event-loop stall from 458 ms to 29 ms for a current-tree scan and from **21 s to 25 ms** for a scan with history, with total scan time unchanged.
+**History is best-effort:** if the clone or history walk fails, the current-tree findings are still returned and the failure is logged.
 
 ### `backend/app/routers/export.py`
 Four `GET` endpoints, all following the same shape: load the scan + its findings, hand them to a pure function in `scanner/` (`build_sarif`, `build_remediation`, `build_patch`), and stream the result back as a file download via `StreamingResponse` with a `Content-Disposition: attachment` header (which is what makes a browser download the response instead of displaying it inline). `json`/`csv`/`sarif`/`patch` are downloads; `remediation` returns plain JSON (meant to be consumed by a UI, not downloaded).
@@ -593,7 +608,7 @@ All routes are mounted under `/api/v1` except `/health`. Interactive Swagger doc
 }
 ```
 **Validation** (in `schemas.py`, described in §8): `source_type` must be exactly `"github"` or `"paste"` (regex-pattern-constrained field); if `github`, `source_ref` must match the GitHub-URL allow-list; if `paste`, `source_ref` must be non-empty and under 512 KB; `max_commits` is clamped `1–1000`; `min_entropy` is clamped `0.0–8.0`.
-**Processing:** inserts a `Scan` row with `status="queued"`, registers `_run_scan(scan_id)` as a FastAPI `BackgroundTask`, and returns before that task has run — the client gets the new scan's `id` immediately and is expected to open a WebSocket (or poll `GET /scans/{id}`) to observe progress.
+**Processing:** inserts a `Scan` row with `status="queued"` (for pastes, `source_ref` is stored as a `paste:<digest>` label, never the content), registers `_run_scan` as a FastAPI `BackgroundTask` — passing pasted content to it in memory — and returns before that task has run — the client gets the new scan's `id` immediately and is expected to open a WebSocket (or poll `GET /scans/{id}`) to observe progress.
 **Response:** `202 Accepted`, body is a `ScanListItem` (the just-created row, `status: "queued"`).
 **Errors:** `422 Unprocessable Entity` with a Pydantic-formatted `detail` array if validation fails (e.g. a non-GitHub URL, an oversized paste).
 
@@ -667,12 +682,14 @@ Maps a `scan_id` to every currently-open socket watching that scan (supporting m
 
 ### 11.1 Two distinct kinds of "background" in this codebase
 
-1. **FastAPI `BackgroundTasks`** — used for running an individual scan (`_run_scan`). This is *request-scoped*: `POST /scans` schedules `_run_scan` to run after the response is sent, on the same event loop, in the same process. It is not a durable job queue — if the server process restarts mid-scan, that scan is lost (its status would stay `"running"` forever, which is a known limitation, see §23).
+1. **FastAPI `BackgroundTasks`** — used for running an individual scan (`_run_scan`). This is *request-scoped*: `POST /scans` schedules `_run_scan` to run after the response is sent, on the same event loop, in the same process. It is not a durable job queue — if the server process restarts mid-scan, that scan is lost. At startup, `mark_interrupted_scans()` marks any scan still `queued`/`running` as `failed` with a "run it again" message, so nothing is left reporting `running` forever — but the work is not retried (see §23). CPU-bound scanning runs in a worker thread (`asyncio.to_thread`), so a long scan no longer freezes the event loop for other requests.
 2. **APScheduler `AsyncIOScheduler`** — used for *recurring* scans on a cron schedule, independent of any single HTTP request.
 
 ### 11.2 How a schedule becomes a recurring job
 
 `workers/scheduler.py` holds one module-level `_scheduler = AsyncIOScheduler()` instance, started once in `main.py`'s lifespan (`start_scheduler()`) and shut down on process exit (`stop_scheduler()`).
+
+Because that job store is in memory, `restore_schedules()` runs at every startup and re-registers each stored schedule (pausing the disabled ones, so re-enabling later has a job to resume). Without it, schedules silently stopped after any restart.
 
 `add_schedule(schedule_id, cron_expression, source_type, source_ref)` parses the 5-field cron string (`minute hour day month weekday`) into APScheduler's `CronTrigger`, then registers a job:
 ```python
@@ -805,7 +822,7 @@ The frontend does not use a component library (no shadcn/ui, no MUI, no Bootstra
 
 **Color** is restricted to a small, purposeful palette declared in `tailwind.config.js`, replacing Tailwind's entire default palette outright (`colors: {transparent, current, ink: {...}, line: {...}, ivory: {...}, sev: {...}, ok}`):
 - **`ink`** — four warm near-black steps (`DEFAULT` canvas, `raised` panels, `overlay` hover states, `inset` wells like code blocks and inputs). Depth comes from these background *steps*, not from bordered boxes or drop shadows.
-- **`ivory`** — four text-opacity steps (`DEFAULT` primary text, `dim` secondary, `mute` tertiary/disabled, `faint` decorative).
+- **`ivory`** — four text-opacity steps (`DEFAULT` primary text, `dim` secondary, `mute` tertiary/disabled, `faint` decorative). `mute` (`#888681`) is set to clear WCAG AA's 4.5:1 for normal text on every ink surface (5.22 / 4.91 / 4.56:1 on canvas, raised, and overlay) while staying well below `dim` (7.73:1), so the hierarchy holds; the original value measured only 3.21:1.
 - **`sev`** — the four severity colors (critical/high/medium/low), the **only** place hue is used to carry meaning rather than decoration.
 - **`ok`** — a single green, reserved for "resolved"/"clean"/success states.
 
@@ -895,7 +912,7 @@ Render's **infrastructure-as-code** blueprint for the backend service — `rootD
 
 ### `.github/workflows/ci.yml`
 Four independent jobs run on every push to `main` and every pull request:
-1. **`backend`** — installs `requirements-dev.txt`, runs `pytest tests/ -v` (the 56 API-integration + unit tests).
+1. **`backend`** — installs `requirements-dev.txt`, runs `pytest tests/ -v` (the 76 API-integration, unit, and hardening-regression tests).
 2. **`scanner-cli`** — installs root `requirements.txt`, runs `pytest test_scanner.py -v` (the 19 legacy-CLI tests) — kept as a genuinely separate job because it exercises a different, older code path (`scanner_core.py`) than the FastAPI backend does.
 3. **`frontend`** — `npm ci && npm run build`, which runs `tsc` (type-check) then `vite build` — this job fails on either a TypeScript error or a build failure, catching type regressions before they reach production.
 4. **`self-scan`** (the "dogfood" job) — runs the project's own CLI scanner against its own source tree and uploads the JSON report as a build artifact. Set to `continue-on-error: true` deliberately, because the repository's own test fixtures intentionally contain fake secret-like strings (used to test the detector) — a failing self-scan is expected and not a CI failure condition; the point is to keep a visible, downloadable audit trail, not to gate merges on it.
@@ -931,14 +948,15 @@ Four independent jobs run on every push to `main` and every pull request:
 
 ## 19. Testing Strategy
 
-**75 automated tests total, split across two independent suites, both run in CI on every push.**
+**95 automated tests total, split across two independent suites, both run in CI on every push.** Backend line coverage is 77% (100% on risk scoring, SARIF, and stats).
 
-### Backend suite — 56 tests (`backend/tests/`, run via `pytest tests/ -v`)
+### Backend suite — 76 tests (`backend/tests/`, run via `pytest tests/ -v`)
 - **`test_api.py`** — full HTTP integration tests against the live FastAPI app, using `httpx.AsyncClient` wired to an `ASGITransport` (meaning requests never leave the process — no real network socket, no real server process, but the *entire* FastAPI request/response/middleware/dependency-injection stack genuinely executes). `conftest.py`'s `client` fixture creates a fresh, isolated throwaway SQLite database **per test** (`Base.metadata.drop_all` then `init_db()` inside the fixture) — so tests never interfere with each other's data and never touch the real development or production database. Covers the full paste-scan lifecycle end-to-end: start a scan → poll until findings exist → filter by severity → request a diff → export in all four formats → check dashboard stats → delete → confirm 404.
 - **`test_risk.py`** — pure unit tests of `compute_risk_score()`: every severity base value, every bonus rule in isolation, the 100-point cap, and that every point added is accompanied by a factor string.
 - **`test_sarif.py`** — validates the SARIF document's structure: correct schema/version strings, one rule per distinct secret type (not per finding), correct severity→level mapping, correct fingerprints, and a well-formed empty document when there are zero findings.
 - **`test_remediation.py`** — env-var-name derivation (both the "infer from source line" and "fall back to the type map" paths), per-language replacement-line generation for Python/Node/Ruby/Go/PHP/`.env`, and patch-file hunk grouping/ordering.
 - **`test_validation.py`** — the input-hardening rules from `schemas.py`: rejecting non-GitHub URLs, rejecting oversized pastes, rejecting malformed cron expressions, and confirming pagination `limit`/`offset` bounds are enforced.
+- **`test_hardening.py`** — regression tests for the security and reliability fixes: no raw secret in any of 8 API responses and exports, pasted content replaced by a stable digest, interrupted scans failed and schedules restored at startup, invalid and too-frequent cron rejected, zip-bomb and member-count limits, the vendor-example placeholder, and an escaped alert email. Each bug-detecting test was confirmed to **fail against the pre-fix code** (15 of 20; the other 5 are guard cases checking that valid input still works).
 
 ### Legacy CLI suite — 19 tests (`test_scanner.py`, run via `pytest test_scanner.py -v`)
 Tests `scanner_core.py` (the original, pre-web-app scanning engine that `cli.py` still uses) — AWS/GitHub/JWT/SSH-key detection, placeholder suppression, entropy-threshold gating, and statistics generation.
@@ -996,12 +1014,12 @@ routers/scans.py  start_scan(body, background_tasks, db)
         │  (paste-size check, non-empty check — all pass)
         │
         ▼
-        new Scan(source_type='paste', source_ref=..., status default 'queued')
+        new Scan(source_type='paste', source_ref=paste_label(text), status 'queued')
         db.add(scan); await db.flush(); await db.refresh(scan); await db.commit()
         │  → INSERT INTO scans (...) — row now exists, status='queued'
         │
         ▼
-        background_tasks.add_task(_run_scan, scan.id)
+        background_tasks.add_task(_run_scan, scan.id, text)   ← content in memory only
         return scan   — HTTP 202, body = ScanListItem JSON
         │
         ▼  (response returns to browser)
@@ -1015,11 +1033,12 @@ mutation.onSuccess(data)
 _run_scan(scan_id) begins running                useWebSocket opens a WS connection to
    scan.status = 'running'; commit               /api/v1/scans/ws/<id>
    _broadcast({event:'started', progress:0})     scan_websocket() accepts it, registers
-   scan_text(source_ref, 'paste', min_entropy)    it in _ws_registry[scan_id]
+   to_thread(scan_text, text, 'paste', …)         it in _ws_registry[scan_id]
      → for each non-comment line, run all 26
        regex patterns, filter placeholders,
        apply entropy gate, downgrade severity
-       for test files, compute_risk_score()
+       for test files, compute_risk_score(),
+       mask every secret in the stored context
    _broadcast({event:'progress', progress:80})  →  onmessage fires, setScanProgress(80)
    for each Finding: db.add(FindingModel(...))
    scan.status='completed'; total_findings=N
@@ -1087,7 +1106,8 @@ createMut.mutate(body)  → POST /api/v1/schedules
         ▼
 schedules.py create_schedule()
    ScheduleCreate validates: name 1-120 chars, source_ref passes the
-   GitHub-URL allow-list, cron_expression has exactly 5 fields
+   GitHub-URL allow-list, source_type is github, cron parses and
+   fires no more often than every 15 minutes
         │
    ScanSchedule row inserted (enabled=True by default)
         │
@@ -1136,7 +1156,8 @@ _run_scheduled_scan(schedule_id, source_type, source_ref)
 Stated plainly, because knowing exactly where a system's edges are is itself a sign of engineering maturity:
 
 - **No authentication or multi-tenancy.** All data is shared across every visitor.
-- **Scans are not durable jobs.** A `_run_scan()` background task is tied to the FastAPI process; if the process restarts mid-scan, that scan's status is left stuck at `"running"` forever, with no automatic recovery or timeout.
+- **Scans are not durable jobs.** A `_run_scan()` background task is tied to the FastAPI process. A restart mid-scan loses the work; startup reconciliation marks the scan `failed` instead of leaving it `running`, but it is not retried automatically.
+- **Schedules are re-registered from the database at startup.** APScheduler's job store is in memory, so `restore_schedules()` rebuilds it on every boot (paused schedules included). A schedule whose fire time passes while the server is asleep is skipped, not run late.
 - **The WebSocket registry is per-process and in-memory.** A multi-instance deployment would need a shared pub/sub layer (e.g., Redis) for broadcasts to reach clients connected to a different instance than the one running their scan.
 - **No "already alerted" suppression on scheduled scans.** An unresolved CRITICAL finding triggers a fresh email on every scheduled run that still detects it, not just the first time.
 - **SQLite on Render's free tier is not guaranteed durable across redeploys**, which is why demo data is re-seeded (idempotently) on every deploy rather than assumed to persist.
