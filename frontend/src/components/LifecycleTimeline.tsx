@@ -1,3 +1,4 @@
+import { parseUtc } from '../api/client'
 import { format } from 'date-fns'
 import type { Finding } from '../api/client'
 
@@ -8,7 +9,7 @@ import type { Finding } from '../api/client'
 export function LifecycleTimeline({ finding: f }: { finding: Finding }) {
   if (!f.introduced_at && !f.last_seen_at) return null
 
-  const fmt = (d: string | null) => (d ? format(new Date(d), 'MMM d, yyyy') : '—')
+  const fmt = (d: string | null) => (d ? format(parseUtc(d), 'MMM d, yyyy') : '—')
   const days = f.exposure_days ?? 0
   // Span width scales against a 90-day window so short exposures read short.
   const spanPct = Math.max(8, Math.min(100, (days / 90) * 100))

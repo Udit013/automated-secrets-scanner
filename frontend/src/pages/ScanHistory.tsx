@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { format } from 'date-fns'
-import { listScans, deleteScan } from '../api/client'
+import { listScans, deleteScan, parseUtc, shortRef } from '../api/client'
+import { ErrorState, InlineError, LoadingRows } from '../components/ui'
 import { StatusBadge } from '../components/StatusBadge'
 
 export function ScanHistory() {
@@ -25,7 +26,7 @@ export function ScanHistory() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  const { data: scans, isLoading } = useQuery({
+  const { data: scans, isLoading, error, refetch } = useQuery({
     queryKey: ['scans'],
     queryFn: () => listScans(50),
     refetchInterval: 5_000,
@@ -65,8 +66,12 @@ export function ScanHistory() {
         </div>
       </div>
 
+      {deleteMut.error && <div className="pb-3"><InlineError error={deleteMut.error} /></div>}
+
       {isLoading ? (
-        <p className="text-2xs font-mono text-ivory-mute animate-pulse rule pt-6">loading…</p>
+        <LoadingRows rows={5} label="Loading scans" />
+      ) : error ? (
+        <ErrorState error={error} onRetry={() => refetch()} />
       ) : filtered.length === 0 ? (
         <div className="rule pt-14 pb-10 text-center">
           <p className="font-mono text-2xs text-ivory-mute mb-2">
@@ -79,8 +84,8 @@ export function ScanHistory() {
           )}
         </div>
       ) : (
-        <div className="rule">
-          <table className="ledger-table">
+        <div className="rule overflow-x-auto">
+          <table className="ledger-table min-w-[720px]">
             <thead>
               <tr>
                 <th>Source</th>
@@ -100,9 +105,14 @@ export function ScanHistory() {
                   onClick={() => navigate(`/history/${s.id}`)}
                 >
                   <td className="max-w-[300px]">
-                    <span className="block truncate font-mono text-2xs text-ivory-dim group-hover:text-ivory transition-colors" title={s.source_ref}>
-                      {s.source_ref.replace('https://github.com/', '')}
-                    </span>
+                    <Link
+                      to={`/history/${s.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="block truncate font-mono text-2xs text-ivory-dim group-hover:text-ivory transition-colors"
+                      title={s.source_ref}
+                    >
+                      {s.source_type === 'paste' ? 'pasted snippet' : shortRef(s.source_ref)}
+                    </Link>
                   </td>
                   <td>
                     <span className="kicker">{s.source_type}</span>
@@ -120,7 +130,7 @@ export function ScanHistory() {
                     {s.files_scanned}
                   </td>
                   <td className="text-right font-mono text-2xs text-ivory-mute whitespace-nowrap">
-                    {format(new Date(s.created_at), 'MMM d · HH:mm')}
+                    {format(parseUtc(s.created_at), 'MMM d · HH:mm')}
                   </td>
                   <td className="text-right" onClick={(e) => e.stopPropagation()}>
                     {confirmingId === s.id ? (

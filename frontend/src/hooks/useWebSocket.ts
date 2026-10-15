@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { API_BASE_URL } from '../api/client'
+import { getToken } from '../api/auth'
 
 export interface WsMessage {
   event: 'started' | 'progress' | 'completed' | 'failed'
@@ -31,7 +32,10 @@ export function useWebSocket(scanId: string | null) {
     }
     const url = `${wsBase}/api/v1/scans/ws/${scanId}`
 
-    const ws = new WebSocket(url)
+    // The access token (private workspaces) rides in the subprotocol list,
+    // the one handshake header a browser lets us set; it never enters the URL.
+    const token = getToken()
+    const ws = new WebSocket(url, token ? ['cipherwatch.v1', `bearer.${token}`] : undefined)
     wsRef.current = ws
 
     ws.onopen = () => setConnected(true)

@@ -4,8 +4,9 @@ import { Link } from 'react-router-dom'
 import { format } from 'date-fns'
 import { clsx } from 'clsx'
 import {
-  listSchedules, createSchedule, toggleSchedule, deleteSchedule,
+  listSchedules, createSchedule, toggleSchedule, deleteSchedule, parseUtc, shortRef,
 } from '../api/client'
+import { EmptyState, ErrorState, InlineError, LoadingRows } from '../components/ui'
 
 const CRON_PRESETS = [
   { label: 'daily 09:00', value: '0 9 * * *' },
@@ -24,7 +25,7 @@ export function Schedules() {
 
   const qc = useQueryClient()
 
-  const { data: schedules, isLoading } = useQuery({
+  const { data: schedules, isLoading, error, refetch } = useQuery({
     queryKey: ['schedules'],
     queryFn: listSchedules,
     refetchInterval: 30_000,
@@ -85,7 +86,8 @@ export function Schedules() {
         className="grid transition-[grid-template-rows] duration-200"
         style={{ gridTemplateRows: showForm ? '1fr' : '0fr' }}
       >
-        <div className="overflow-hidden">
+        {/* invisible while collapsed so its fields drop out of the tab order */}
+        <div className={clsx('overflow-hidden', !showForm && 'invisible')}>
           <form onSubmit={handleSubmit} className="panel px-5 py-5 mb-6 space-y-5">
             <div className="grid sm:grid-cols-2 gap-5">
               <div>
@@ -141,7 +143,7 @@ export function Schedules() {
                 required
               />
               <p className="text-2xs text-ivory-mute mt-1.5 font-mono">
-                {cron} · five-field cron
+                {cron} · five-field cron · UTC
               </p>
             </div>
 
@@ -155,11 +157,7 @@ export function Schedules() {
               <span className="text-[13px] text-ivory">Include git history each run</span>
             </label>
 
-            {createMut.isError && (
-              <p className="text-2xs font-mono text-sev-critical" role="alert">
-                ✕ {(createMut.error as Error)?.message}
-              </p>
-            )}
+            <InlineError error={createMut.error} />
 
             <div className="flex gap-2">
               <button type="submit" className="btn-primary" disabled={createMut.isPending}>
@@ -173,15 +171,19 @@ export function Schedules() {
         </div>
       </div>
 
+      {(toggleMut.error || deleteMut.error) && (
+        <div className="pb-3"><InlineError error={toggleMut.error ?? deleteMut.error} /></div>
+      )}
+
       {isLoading ? (
-        <p className="text-2xs font-mono text-ivory-mute animate-pulse rule pt-6">loading…</p>
+        <LoadingRows rows={3} label="Loading schedules" />
+      ) : error ? (
+        <ErrorState error={error} onRetry={() => refetch()} />
       ) : (schedules ?? []).length === 0 ? (
-        <div className="rule pt-14 pb-10 text-center">
-          <p className="font-mono text-2xs text-ivory-mute mb-2">[ no recurring scans ]</p>
-          <p className="text-2xs text-ivory-mute">
-            Schedules run unattended and alert on critical findings.
-          </p>
-        </div>
+        <EmptyState title="no recurring scans">
+          A schedule rescans a repository on a cron cadence (UTC). With SMTP configured on the
+          server, it emails an alert when a new, untriaged critical credential appears.
+        </EmptyState>
       ) : (
         <div className="rule">
           <table className="ledger-table">
@@ -190,7 +192,7 @@ export function Schedules() {
                 <th>Name</th>
                 <th>Repository</th>
                 <th>Cadence</th>
-                <th className="!text-right">Next run</th>
+                <th className="!text-right">Next run (local)</th>
                 <th className="!text-right">Last run</th>
                 <th>State</th>
                 <th className="w-32" />
@@ -202,15 +204,15 @@ export function Schedules() {
                   <td className="text-[13px] text-ivory">{s.name}</td>
                   <td className="max-w-[200px]">
                     <span className="block truncate font-mono text-2xs text-ivory-dim" title={s.source_ref}>
-                      {s.source_ref.replace('https://github.com/', '')}
+                      {shortRef(s.source_ref, 40)}
                     </span>
                   </td>
                   <td className="font-mono text-2xs text-ivory-dim">{s.cron_expression}</td>
                   <td className="text-right font-mono text-2xs text-ivory-mute whitespace-nowrap">
-                    {s.next_run_at ? format(new Date(s.next_run_at), 'MMM d · HH:mm') : '—'}
+                    {s.next_run_at ? format(parseUtc(s.next_run_at), 'MMM d · HH:mm') : '—'}
                   </td>
                   <td className="text-right font-mono text-2xs text-ivory-mute whitespace-nowrap">
-                    {s.last_run_at ? format(new Date(s.last_run_at), 'MMM d · HH:mm') : 'never'}
+                    {s.last_run_at ? format(parseUtc(s.last_run_at), 'MMM d · HH:mm') : 'never'}
                   </td>
                   <td>
                     <span className="inline-flex items-center gap-1.5 text-2xs font-mono">

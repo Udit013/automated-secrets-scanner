@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
-import { SEV_COLOR, SEV_ORDER } from './SeverityBadge'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { SEV_COLOR, SEV_ORDER } from '../lib/severity'
 import type { Severity } from '../api/client'
 
 /* Hand-built chart primitives. One series each, ink-and-ivory marks,
@@ -51,8 +51,19 @@ export function SeveritySpectrum({
 export function TrendChart({ points }: { points: { date: string; count: number }[] }) {
   const [hover, setHover] = useState<number | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
+  const boxRef = useRef<HTMLDivElement>(null)
 
-  const W = 560
+  // Draw in the container's real pixel width, so the line spans the column
+  // at any size without stretching the markers.
+  const [W, setW] = useState(560)
+  const empty = points.length === 0
+  useEffect(() => {
+    const el = boxRef.current
+    if (!el || empty) return
+    const ro = new ResizeObserver(([entry]) => setW(Math.max(120, Math.round(entry.contentRect.width))))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [empty])
   const H = 120
   const PAD_Y = 10
 
@@ -69,7 +80,7 @@ export function TrendChart({ points }: { points: { date: string; count: number }
     }
     const area = `${d} L ${xs[xs.length - 1]} ${H} L ${xs[0]} ${H} Z`
     return { path: d, area, xs, ys, max }
-  }, [points])
+  }, [points, W])
 
   if (points.length === 0) {
     return <p className="text-2xs font-mono text-ivory-mute">no scan activity yet</p>
@@ -85,7 +96,7 @@ export function TrendChart({ points }: { points: { date: string; count: number }
 
   const h = hover
   return (
-    <div className="relative">
+    <div className="relative" ref={boxRef}>
       <svg
         ref={svgRef}
         viewBox={`0 0 ${W} ${H}`}

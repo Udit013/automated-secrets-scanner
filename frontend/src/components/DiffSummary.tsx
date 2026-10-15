@@ -1,4 +1,5 @@
 import { format } from 'date-fns'
+import { parseUtc } from '../api/client'
 import type { ScanDiff } from '../api/client'
 
 /**
@@ -24,7 +25,7 @@ export function DiffSummary({ diff }: { diff: ScanDiff }) {
         <span className="kicker">Change since last scan</span>
         {diff.baseline_created_at && (
           <span className="text-2xs font-mono text-ivory-mute">
-            baseline · {format(new Date(diff.baseline_created_at), 'MMM d HH:mm')}
+            baseline · {format(parseUtc(diff.baseline_created_at), 'MMM d HH:mm')}
           </span>
         )}
       </div>

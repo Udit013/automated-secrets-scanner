@@ -1,22 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { isAxiosError } from 'axios'
 import { clsx } from 'clsx'
-import { startScan, getScan } from '../api/client'
+import { apiErrorMessage, startScan, getScan } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { useHealth } from '../hooks/useHealth'
 
 type Tab = 'github' | 'paste'
-
-/** Surface FastAPI validation details instead of axios's generic message. */
-function apiErrorMessage(error: unknown): string {
-  if (isAxiosError(error)) {
-    const detail = error.response?.data?.detail
-    if (typeof detail === 'string') return detail
-    if (Array.isArray(detail) && detail[0]?.msg) return detail[0].msg
-  }
-  return (error as Error)?.message ?? 'Scan failed'
-}
 
 export function NewScan() {
   const [tab, setTab] = useState<Tab>('github')
@@ -28,29 +18,40 @@ export function NewScan() {
   const [activeScanId, setActiveScanId] = useState<string | null>(null)
   const [scanProgress, setScanProgress] = useState(0)
   const [scanMessage, setScanMessage] = useState('')
+  const [failure, setFailure] = useState<string | null>(null)
+  const { data: health } = useHealth()
 
   const navigate = useNavigate()
   const qc = useQueryClient()
   const { lastMessage } = useWebSocket(activeScanId)
   const finishedRef = useRef(false)
 
-  const finish = (scanId: string) => {
-    if (finishedRef.current) return
+  // One place decides what a terminal state means, whichever channel (the
+  // WebSocket or the fallback poll) reports it first. Kept in a ref so the
+  // effects below always call the current closure.
+  const settle = useRef<(status: 'completed' | 'failed', error?: string | null) => void>(() => {})
+  settle.current = (status, error) => {
+    if (!activeScanId || finishedRef.current) return
     finishedRef.current = true
-    qc.invalidateQueries({ queryKey: ['scans'] })
-    qc.invalidateQueries({ queryKey: ['stats'] })
-    setScanProgress(100)
-    setTimeout(() => navigate(`/history/${scanId}`), 600)
+    if (status === 'completed') {
+      qc.invalidateQueries({ queryKey: ['scans'] })
+      qc.invalidateQueries({ queryKey: ['stats'] })
+      qc.invalidateQueries({ queryKey: ['projects'] })
+      setScanProgress(100)
+      const id = activeScanId
+      setTimeout(() => navigate(`/history/${id}`), 600)
+    } else {
+      setActiveScanId(null)
+      setFailure(error || 'The scan failed.')
+    }
   }
 
   useEffect(() => {
     if (!lastMessage) return
     if (lastMessage.progress !== undefined) setScanProgress(lastMessage.progress)
     if (lastMessage.message) setScanMessage(lastMessage.message)
-    if (lastMessage.event === 'completed') finish(activeScanId!)
-    if (lastMessage.event === 'failed') {
-      mutation.reset()
-      setActiveScanId(null)
+    if (lastMessage.event === 'completed' || lastMessage.event === 'failed') {
+      settle.current(lastMessage.event, lastMessage.error)
     }
   }, [lastMessage])
 
@@ -62,18 +63,15 @@ export function NewScan() {
     enabled: !!activeScanId,
     refetchInterval: 1500,
   })
+  const polledStatus = polledScan?.status
+  const polledError = polledScan?.error_message
   useEffect(() => {
-    if (!polledScan || !activeScanId) return
-    if (polledScan.status === 'completed') finish(activeScanId)
-    if (polledScan.status === 'failed') {
-      mutation.reset()
-      setActiveScanId(null)
-      setScanMessage(polledScan.error_message ?? 'scan failed')
-    }
-  }, [polledScan?.status])
+    if (polledStatus === 'completed' || polledStatus === 'failed') settle.current(polledStatus, polledError)
+  }, [polledStatus, polledError])
 
   const mutation = useMutation({
     mutationFn: startScan,
+    onMutate: () => setFailure(null),
     onSuccess: (data) => {
       finishedRef.current = false
       setActiveScanId(data.id)
@@ -94,10 +92,7 @@ export function NewScan() {
     })
   }
 
-  const isRunning =
-    !!activeScanId &&
-    !finishedRef.current &&
-    !['completed', 'failed'].includes(lastMessage?.event ?? '')
+  const isRunning = !!activeScanId && !finishedRef.current
 
   return (
     <div className="max-w-xl">
@@ -112,7 +107,7 @@ export function NewScan() {
       {/* Source selector — segmented, not tabs-with-underline */}
       <div className="rule pt-5">
         <div className="field-label">Source</div>
-        <div className="inline-flex rounded-sm bg-ink-inset p-0.5 border border-line" role="tablist">
+        <div className="inline-flex rounded-sm bg-ink-inset p-0.5 border border-line" role="group" aria-label="Source">
           {(
             [
               { id: 'github', label: 'GitHub repository' },
@@ -121,8 +116,8 @@ export function NewScan() {
           ).map(({ id, label }) => (
             <button
               key={id}
-              role="tab"
-              aria-selected={tab === id}
+              type="button"
+              aria-pressed={tab === id}
               onClick={() => setTab(id)}
               className={clsx(
                 'h-7 px-3 rounded-[1px] text-2xs font-medium transition-colors',
@@ -217,7 +212,20 @@ export function NewScan() {
 
         {mutation.isError && (
           <p className="text-2xs font-mono text-sev-critical" role="alert">
-            ✕ {apiErrorMessage(mutation.error)}
+            ✕ {apiErrorMessage(mutation.error, 'Could not start the scan')}
+          </p>
+        )}
+        {failure && (
+          <p className="text-2xs font-mono text-sev-critical" role="alert">
+            ✕ {failure}
+          </p>
+        )}
+
+        {health && !health.auth_required && (
+          <p className="text-2xs text-ivory-mute border-l-2 border-line-strong pl-3">
+            This is a public workspace: anyone with its URL can see scan results. Pasted text is scanned in
+            memory and not kept; each finding stores only its line, with the secret masked. Still, don't paste
+            live production secrets into a shared demo.
           </p>
         )}
 

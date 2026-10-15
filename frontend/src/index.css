@@ -136,6 +136,14 @@
     @apply transition-colors hover:bg-ink-raised;
   }
 
+  /* Horizontally scrollable strips (mobile nav) without a visible bar. */
+  .scroll-strip {
+    scrollbar-width: none;
+  }
+  .scroll-strip::-webkit-scrollbar {
+    display: none;
+  }
+
   .mono-num {
     @apply font-mono;
     font-variant-numeric: tabular-nums;

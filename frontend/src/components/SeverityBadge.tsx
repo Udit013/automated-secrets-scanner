@@ -1,13 +1,5 @@
 import type { Severity } from '../api/client'
-
-export const SEV_COLOR: Record<Severity, string> = {
-  CRITICAL: '#F2545B',
-  HIGH: '#EE7A3B',
-  MEDIUM: '#D9A514',
-  LOW: '#7E9CC9',
-}
-
-export const SEV_ORDER: Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
+import { SEV_COLOR } from '../lib/severity'
 
 /**
  * Severity is typographic, not a pill: a small tick of the status color

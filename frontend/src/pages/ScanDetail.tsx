@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { format } from 'date-fns'
-import { getScan, getFindings, getScanDiff, exportUrl } from '../api/client'
-import { SeverityBadge, SEV_COLOR, SEV_ORDER } from '../components/SeverityBadge'
+import { getScan, getFindings, getScanDiff, downloadExport, parseUtc, projectSlug, shortRef } from '../api/client'
+import type { ExportFormat } from '../api/client'
+import { ErrorState, InlineError, LoadingRows } from '../components/ui'
+import { SeverityBadge } from '../components/SeverityBadge'
+import { SEV_COLOR, SEV_ORDER } from '../lib/severity'
 import { StatusBadge } from '../components/StatusBadge'
 import { RiskBadge, RiskMeter } from '../components/RiskBadge'
 import { LifecycleTimeline } from '../components/LifecycleTimeline'
@@ -23,14 +26,19 @@ export function ScanDetail() {
   const [severityFilter, setSeverityFilter] = useState<Severity | ''>('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
-  const { data: scan } = useQuery({
+  const { data: scan, error: scanError, refetch } = useQuery({
     queryKey: ['scan', id],
     queryFn: () => getScan(id!),
-    refetchInterval: (q) => (q.state.data?.status === 'running' ? 3000 : false),
+    refetchInterval: (q) =>
+      q.state.data?.status === 'running' || q.state.data?.status === 'queued' ? 2500 : false,
     enabled: !!id,
   })
 
-  const { data: findings } = useQuery({
+  const exporter = useMutation({
+    mutationFn: (fmt: ExportFormat) => downloadExport(id!, fmt),
+  })
+
+  const { data: findings, error: findingsError } = useQuery({
     queryKey: ['findings', id],
     queryFn: () => getFindings(id!, { limit: 500 }),
     enabled: !!id && scan?.status === 'completed',
@@ -42,14 +50,22 @@ export function ScanDetail() {
     enabled: !!id && scan?.status === 'completed',
   })
 
-  if (!scan) {
-    return <p className="text-2xs font-mono text-ivory-mute animate-pulse py-12">loading report…</p>
+  if (scanError) {
+    return (
+      <div>
+        <Link to="/history" className="text-2xs text-ivory-mute hover:text-ivory transition-colors">← scans</Link>
+        <ErrorState error={scanError} onRetry={() => refetch()} />
+      </div>
+    )
   }
+  if (!scan) return <LoadingRows rows={5} label="Loading report" />
+  const slug = scan.source_type === 'github' ? projectSlug(scan.source_ref) : null
 
   const toggle = (fid: string) =>
     setExpanded((prev) => {
       const next = new Set(prev)
-      next.has(fid) ? next.delete(fid) : next.add(fid)
+      if (next.has(fid)) next.delete(fid)
+      else next.add(fid)
       return next
     })
 
@@ -71,17 +87,32 @@ export function ScanDetail() {
           <div className="min-w-0">
             <p className="kicker mb-1">Scan report</p>
             <h1 className="page-title font-mono text-[18px] truncate max-w-xl" title={scan.source_ref}>
-              {scan.source_ref.replace('https://github.com/', '')}
+              {scan.source_type === 'paste' ? 'pasted snippet' : shortRef(scan.source_ref, 60)}
             </h1>
+            {slug && (
+              <Link to={`/projects/${slug}`} className="inline-block mt-1.5 text-2xs text-ivory-dim hover:text-ivory underline underline-offset-4">
+                Open the credential ledger to triage →
+              </Link>
+            )}
           </div>
-          <div className="flex items-center gap-1">
-            <span className="kicker mr-2">export</span>
-            {EXPORTS.map(({ fmt, label }) => (
-              <a key={fmt} href={exportUrl(id!, fmt)} download className="btn-outline h-7 px-2.5 text-2xs">
-                {label}
-              </a>
-            ))}
-          </div>
+          {scan.status === 'completed' && (
+            <div className="flex flex-col items-end gap-1.5">
+              <div className="flex items-center gap-1">
+                <span className="kicker mr-2">export</span>
+                {EXPORTS.map(({ fmt, label }) => (
+                  <button
+                    key={fmt}
+                    onClick={() => exporter.mutate(fmt)}
+                    disabled={exporter.isPending}
+                    className="btn-outline h-7 px-2.5 text-2xs"
+                  >
+                    {exporter.isPending && exporter.variables === fmt ? '…' : label}
+                  </button>
+                ))}
+              </div>
+              <InlineError error={exporter.error} />
+            </div>
+          )}
         </div>
 
         {/* Meta line */}
@@ -92,7 +123,7 @@ export function ScanDetail() {
           </Meta>
           <Meta term="completed">
             <span className="font-mono text-2xs text-ivory-dim">
-              {scan.completed_at ? format(new Date(scan.completed_at), 'MMM d, yyyy · HH:mm') : '—'}
+              {scan.completed_at ? format(parseUtc(scan.completed_at), 'MMM d, yyyy · HH:mm') : '—'}
             </span>
           </Meta>
           <Meta term="id">
@@ -101,9 +132,11 @@ export function ScanDetail() {
         </dl>
       </div>
 
-      {scan.status === 'running' && (
-        <div className="rule pt-8 pb-10 text-center">
-          <p className="font-mono text-2xs text-ivory-dim mb-3">scanning… {scan.progress}%</p>
+      {(scan.status === 'running' || scan.status === 'queued') && (
+        <div className="rule pt-8 pb-10 text-center" role="status" aria-live="polite">
+          <p className="font-mono text-2xs text-ivory-dim mb-3">
+            {scan.status === 'queued' ? 'queued…' : `scanning… ${scan.progress}%`}
+          </p>
           <div className="mx-auto max-w-sm h-[3px] rounded-full bg-line overflow-hidden">
             <div
               className="h-full bg-ivory transition-[width] duration-300"
@@ -115,7 +148,7 @@ export function ScanDetail() {
 
       {scan.status === 'failed' && (
         <div className="rule pt-6">
-          <p className="text-2xs font-mono text-sev-critical">scan failed — {scan.error_message}</p>
+          <p className="text-2xs font-mono text-sev-critical" role="alert">scan failed — {scan.error_message || 'unknown error'}</p>
         </div>
       )}
 
@@ -160,7 +193,13 @@ export function ScanDetail() {
             </span>
           </div>
 
-          {all.length === 0 && (
+          {findingsError ? (
+            <ErrorState error={findingsError} />
+          ) : !findings ? (
+            <LoadingRows rows={3} label="Loading findings" />
+          ) : null}
+
+          {findings && all.length === 0 && (
             <div className="pt-12 pb-10 text-center">
               <p className="font-mono text-2xs text-ok mb-1">[ clean ]</p>
               <p className="text-2xs text-ivory-mute">no secrets detected in this source</p>
@@ -238,7 +277,8 @@ function FindingRow({
         className="grid transition-[grid-template-rows] duration-200"
         style={{ gridTemplateRows: isOpen ? '1fr' : '0fr' }}
       >
-        <div className="overflow-hidden">
+        {/* invisible when collapsed: out of the tab order and the accessibility tree */}
+        <div className={clsx('overflow-hidden', !isOpen && 'invisible')}>
           <div className="px-4 pb-4 pt-1 space-y-4">
             <RiskMeter score={f.risk_score} />
 
@@ -323,7 +363,8 @@ function Detail({ term, children }: { term: string; children: React.ReactNode })
 function groupByFile(findings: Finding[]): Record<string, Finding[]> {
   const groups: Record<string, Finding[]> = {}
   for (const f of findings) {
-    ;(groups[f.file_path] ??= []).push(f)
+    groups[f.file_path] ??= []
+    groups[f.file_path].push(f)
   }
   for (const list of Object.values(groups)) {
     list.sort((a, b) => b.risk_score - a.risk_score)

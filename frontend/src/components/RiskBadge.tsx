@@ -1,17 +1,4 @@
-export function riskColor(score: number): string {
-  if (score >= 80) return '#F2545B'
-  if (score >= 55) return '#EE7A3B'
-  if (score >= 30) return '#D9A514'
-  return '#7E9CC9'
-}
-
-export function riskBand(score: number): string {
-  if (score >= 80) return 'critical'
-  if (score >= 55) return 'high'
-  if (score >= 30) return 'medium'
-  return 'low'
-}
-
+import { riskBand, riskColor } from '../lib/severity'
 /** Zero-padded mono score — instrument readout, not a chip. */
 export function RiskBadge({ score }: { score: number }) {
   return (
