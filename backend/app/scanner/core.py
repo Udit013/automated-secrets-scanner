@@ -1,14 +1,17 @@
 """
-Enhanced secrets scanning engine.
-Combines regex pattern matching, Shannon entropy analysis, and semantic heuristics.
+Secrets scanning engine.
+Combines regex pattern matching, Shannon entropy gating, and placeholder
+filtering, and gives every detected credential a stable fingerprint.
 """
 
+import hashlib
+import hmac
 import logging
 import re
 import math
 import os
 from dataclasses import dataclass
-from typing import Optional, AsyncIterator
+from typing import Optional
 from pathlib import Path
 
 from datetime import datetime
@@ -41,6 +44,8 @@ class Finding:
     exposure_days: Optional[int] = None
     commits_affected: Optional[int] = None
     authors_count: Optional[int] = None
+    # Stable identity of the credential (not the line): see fingerprint().
+    fingerprint: Optional[str] = None
 
 
 SCANNABLE_EXTENSIONS = {
@@ -49,14 +54,76 @@ SCANNABLE_EXTENSIONS = {
     ".yaml", ".yml", ".json", ".xml", ".conf", ".config", ".ini",
     ".env", ".properties", ".sh", ".bash", ".zsh", ".fish",
     ".tf", ".tfvars", ".toml", ".gradle", ".pom", ".lock",
+    # Where private keys and leaked notebook outputs actually live.
+    ".pem", ".key", ".cfg", ".ipynb",
+}
+
+# Files with no useful extension that routinely hold credentials. Matching by
+# suffix alone misses them (Path(".npmrc").suffix is ""), which meant the
+# npm and PyPI token patterns could never fire on the files those tokens use.
+SCANNABLE_FILENAMES = {
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    ".npmrc", ".pypirc", ".netrc", ".git-credentials", ".dockercfg",
+    "Dockerfile", "credentials",
 }
 
 IGNORE_DIRS = {
-    ".git", "node_modules", "venv", "__pycache__", ".idea", ".vscode",
+    ".git", "node_modules", "venv", ".venv", "__pycache__", ".idea", ".vscode",
     "build", "dist", "target", ".next", ".nuxt", "coverage", ".pytest_cache",
+    ".tox", ".mypy_cache", ".ruff_cache",
 }
 
+
+# Larger files are skipped: credentials live in source and config, and reading
+# a huge generated file whole could exhaust a small instance's memory.
+# (Lockfiles, the largest text files most repos have, fit comfortably.)
+MAX_FILE_BYTES = 5 * 1024 * 1024
+
+
+def is_scannable(name: str) -> bool:
+    return (
+        Path(name).suffix in SCANNABLE_EXTENSIONS
+        or name in SCANNABLE_FILENAMES
+        or name.startswith(".env")
+    )
+
 MIN_ENTROPY = 3.5
+
+# Key for credential fingerprints. The server replaces it at startup with a
+# per-install secret (configure_fingerprint_key); the CLI keeps this public
+# default unless FINGERPRINT_KEY is set, so baselines stay stable across
+# machines. Same key on both sides -> CLI and console fingerprints match.
+DEFAULT_FINGERPRINT_KEY = b"cipherwatch-fingerprint-v1"
+_fingerprint_key = DEFAULT_FINGERPRINT_KEY
+
+
+def configure_fingerprint_key(key: bytes) -> None:
+    global _fingerprint_key
+    _fingerprint_key = key
+
+
+def fingerprint_key_id() -> str:
+    """Short, non-reversible label of the active key, so two fingerprint sets
+    can be checked for comparability without revealing the key."""
+    return hmac.new(_fingerprint_key, b"cipherwatch-key-id", hashlib.sha256).hexdigest()[:12]
+
+
+def fingerprint(raw: str, pattern: SecretPattern, file_path: str, masked: str) -> str:
+    """
+    Identify a *credential* rather than a line, so one leaked key found in
+    five files and forty commits is triaged — and rotated — once.
+
+    Format-specific credentials are identified by value: an HMAC of the raw
+    secret, which is never stored. Two kinds fall back to location instead:
+    marker patterns, whose match is a fixed header shared by every key of
+    that type; and generic patterns, whose values can be low-entropy enough
+    (`Summer2024!`) that even a keyed hash of the value is better avoided.
+    """
+    if pattern.marker or not pattern.format_specific:
+        material = f"loc\x00{pattern.name}\x00{file_path}\x00{masked}"
+    else:
+        material = f"val\x00{raw}"
+    return hmac.new(_fingerprint_key, material.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
 
 def _shannon_entropy(data: str) -> float:
@@ -140,12 +207,13 @@ def scan_text(
                 )
 
                 raw_secrets.append(matched_text)
+                masked = _mask(matched_text)
                 line_findings.append(
                     Finding(
                         file_path=file_path,
                         line_number=line_num,
                         secret_type=pattern.name,
-                        matched_string=_mask(matched_text),
+                        matched_string=masked,
                         entropy=round(entropy, 2),
                         severity=severity,
                         confidence=confidence,
@@ -155,6 +223,7 @@ def scan_text(
                         is_in_history=is_history,
                         risk_score=score,
                         risk_factors=score_factors,
+                        fingerprint=fingerprint(matched_text, pattern, file_path, masked),
                     )
                 )
 
@@ -191,44 +260,43 @@ def scan_file(file_path: str, min_entropy: float = MIN_ENTROPY) -> list[Finding]
         return []
 
 
+def iter_scannable_files(directory: str):
+    """
+    Yield (absolute path, repo-relative POSIX path) for every scannable file.
+
+    Relative paths matter: findings — and location-scoped fingerprints — must
+    not depend on where the tree happens to be checked out, or a credential
+    would look new every time it is scanned from a different temp directory.
+    Symlinks are skipped so a scan never reads outside the tree.
+    """
+    for root, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            if os.path.islink(fpath) or not is_scannable(fname):
+                continue
+            try:
+                if os.path.getsize(fpath) > MAX_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
+            yield fpath, Path(os.path.relpath(fpath, directory)).as_posix()
+
+
 def scan_directory(
     directory: str, min_entropy: float = MIN_ENTROPY
 ) -> tuple[list[Finding], int]:
     all_findings: list[Finding] = []
     files_scanned = 0
-
-    for root, dirs, files in os.walk(directory):
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
-        for fname in files:
-            fpath = os.path.join(root, fname)
-            ext = Path(fpath).suffix
-            if ext in SCANNABLE_EXTENSIONS or fname.startswith(".env"):
-                findings = scan_file(fpath, min_entropy)
-                all_findings.extend(findings)
-                files_scanned += 1
-
+    for fpath, rel in iter_scannable_files(directory):
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read()
+        except OSError:
+            continue
+        all_findings.extend(scan_text(content, rel, min_entropy))
+        files_scanned += 1
     return all_findings, files_scanned
-
-
-async def scan_directory_streaming(
-    directory: str, min_entropy: float = MIN_ENTROPY
-) -> AsyncIterator[tuple[str, list[Finding], int, int]]:
-    """
-    Yields (file_path, findings, files_done, total_files) as each file is processed.
-    """
-    all_files = []
-    for root, dirs, files in os.walk(directory):
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
-        for fname in files:
-            fpath = os.path.join(root, fname)
-            ext = Path(fpath).suffix
-            if ext in SCANNABLE_EXTENSIONS or fname.startswith(".env"):
-                all_files.append(fpath)
-
-    total = len(all_files)
-    for i, fpath in enumerate(all_files, 1):
-        findings = scan_file(fpath, min_entropy)
-        yield fpath, findings, i, total
 
 
 def scan_git_history(
@@ -270,8 +338,10 @@ def scan_git_history(
             for item in commit.tree.traverse():
                 if item.type != "blob":
                     continue
-                ext = Path(item.path).suffix
-                if ext not in SCANNABLE_EXTENSIONS and not item.path.split("/")[-1].startswith(".env"):
+                parts = item.path.split("/")
+                if not is_scannable(parts[-1]) or IGNORE_DIRS.intersection(parts[:-1]):
+                    continue
+                if item.size > MAX_FILE_BYTES:
                     continue
                 try:
                     content = item.data_stream.read().decode("utf-8", errors="ignore")
@@ -280,7 +350,7 @@ def scan_git_history(
                 files_scanned += 1
                 for f in scan_text(content, item.path, min_entropy,
                                    commit_hash=short_sha, is_history=True):
-                    key = (f.file_path, f.secret_type, f.matched_string)
+                    key = (f.file_path, f.secret_type, f.fingerprint)
                     rec = agg.get(key)
                     if rec is None:
                         agg[key] = {

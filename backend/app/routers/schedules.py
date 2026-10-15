@@ -2,9 +2,10 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings
 from ..database import get_db
 from ..models import ScanSchedule
 from ..schemas import ScheduleCreate, ScheduleOut
@@ -17,6 +18,9 @@ async def create_schedule(
     body: ScheduleCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    count = (await db.execute(select(func.count(ScanSchedule.id)))).scalar_one()
+    if count >= settings.MAX_SCHEDULES:
+        raise HTTPException(409, f"Schedule limit reached ({settings.MAX_SCHEDULES}). Delete one first.")
     schedule = ScanSchedule(
         name=body.name,
         source_type=body.source_type,

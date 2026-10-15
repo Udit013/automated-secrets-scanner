@@ -73,3 +73,10 @@ class TestBuildSarif:
         run = build_sarif(_scan(), [])["runs"][0]
         assert run["results"] == []
         assert run["tool"]["driver"]["rules"] == []
+
+
+def test_credential_fingerprint_is_a_partial_fingerprint():
+    from app.scanner.core import scan_text
+    f = scan_text('k = "AKIA' + 'V3WBCDEF4GHI7JKM"', "a.py")[0]
+    result = build_sarif(SimpleNamespace(id="s", source_ref="r"), [f])["runs"][0]["results"][0]
+    assert result["partialFingerprints"]["cipherwatch/credential/v1"] == f.fingerprint

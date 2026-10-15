@@ -5,6 +5,7 @@ Scan management endpoints + WebSocket for live progress.
 import asyncio
 import hashlib
 import json
+import logging
 from typing import Annotated
 
 from fastapi import (
@@ -23,8 +24,12 @@ from ..schemas import (
 from ..scanner.core import scan_text, Finding
 from ..scanner.github_scanner import scan_github_repo
 from ..notifications import send_critical_alert
+from ..config import settings
+from ..security import WS_SUBPROTOCOL, limit_scan_creation
+from ..services import inventory
 
 router = APIRouter(prefix="/scans", tags=["scans"])
+logger = logging.getLogger(__name__)
 
 # In-memory registry: scan_id -> list of connected websockets
 _ws_registry: dict[str, list[WebSocket]] = {}
@@ -158,6 +163,7 @@ async def _run_scan(scan_id: str, paste_content: str | None = None):
                     exposure_days=f.exposure_days,
                     commits_affected=f.commits_affected,
                     authors_count=f.authors_count,
+                    fingerprint=f.fingerprint,
                 ))
 
             scan.status = "completed"
@@ -175,15 +181,22 @@ async def _run_scan(scan_id: str, paste_content: str | None = None):
         })
         await _close_scan_sockets(scan_id)
 
-        # Email alert for critical findings
-        critical = sum(1 for f in findings if f.severity == "CRITICAL")
-        if critical > 0:
+        # Alert only on CRITICAL credentials that are new since the previous
+        # scan of this source and not triaged away — not on every CRITICAL
+        # finding, which made a schedule re-send the same alert every run.
+        # The scan is already saved as completed — an alerting error must not
+        # fall through to the failure handler below and mark it failed.
+        try:
             async with AsyncSessionLocal() as db:
                 scan = await db.get(Scan, scan_id)
+                fresh = await inventory.new_open_critical(db, scan)
+            if fresh:
                 source = "pasted content" if scan.source_type == "paste" else scan.source_ref
-                task = asyncio.create_task(send_critical_alert(scan_id, critical, source))
+                task = asyncio.create_task(send_critical_alert(scan_id, len(fresh), source))
                 _background_tasks.add(task)
                 task.add_done_callback(_background_tasks.discard)
+        except Exception:
+            logger.warning("Alert evaluation failed for scan %s", scan_id, exc_info=True)
 
     except Exception as e:
         async with AsyncSessionLocal() as db:
@@ -198,12 +211,26 @@ async def _run_scan(scan_id: str, paste_content: str | None = None):
         await _close_scan_sockets(scan_id)
 
 
-@router.post("", response_model=ScanListItem, status_code=202)
+@router.post(
+    "", response_model=ScanListItem, status_code=202,
+    dependencies=[Depends(limit_scan_creation)],
+)
 async def start_scan(
     body: StartScanRequest,
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
+    # Scans run in-process; cap how many run at once so a burst can't
+    # exhaust a small instance's memory.
+    active = (
+        await db.execute(select(func.count(Scan.id)).where(Scan.status.in_(("queued", "running"))))
+    ).scalar_one()
+    if active >= settings.MAX_CONCURRENT_SCANS:
+        raise HTTPException(
+            429, f"{active} scans are already running. Try again in a minute.",
+            headers={"Retry-After": "60"},
+        )
+
     is_paste = body.source_type == "paste"
     scan = Scan(
         source_type=body.source_type,
@@ -262,74 +289,51 @@ async def get_findings(
     return result.scalars().all()
 
 
-def _finding_key(f) -> tuple:
-    """Stable identity for a secret across scans (line numbers may shift)."""
-    return (f.file_path, f.secret_type, f.matched_string)
-
-
 @router.get("/{scan_id}/diff", response_model=ScanDiffOut)
 async def diff_scan(scan_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     """
-    Compare this scan against the most recent earlier *completed* scan of the
-    same source — surfacing newly introduced and resolved secrets.
+    Compare this scan with the most recent earlier completed scan of the same
+    source, counted in credentials, not lines. A credential that moved files,
+    or whose line shifted, is unchanged; a rotated key that reappears with a
+    new value is new.
     """
     scan = await db.get(Scan, scan_id)
     if not scan:
         raise HTTPException(404, "Scan not found")
 
-    baseline = (
-        await db.execute(
-            select(Scan)
-            .where(
-                Scan.source_ref == scan.source_ref,
-                Scan.status == "completed",
-                Scan.created_at < scan.created_at,
-                Scan.id != scan.id,
-            )
-            .order_by(Scan.created_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    states = await inventory.load_states(db, scan.source_ref)
+    current = inventory.group_credentials(await inventory.scan_findings(db, scan_id), states)
+    baseline = await inventory.latest_completed_scan(db, scan.source_ref, before=scan.created_at)
+    if baseline is None:
+        return ScanDiffOut(has_baseline=False, current_total=len(current))
+    previous = inventory.group_credentials(await inventory.scan_findings(db, baseline.id), states)
 
-    cur = (
-        await db.execute(select(FindingModel).where(FindingModel.scan_id == scan_id))
-    ).scalars().all()
-
-    if not baseline:
-        return ScanDiffOut(has_baseline=False, current_total=len(cur))
-
-    base = (
-        await db.execute(select(FindingModel).where(FindingModel.scan_id == baseline.id))
-    ).scalars().all()
-
-    cur_map = {_finding_key(f): f for f in cur}
-    base_map = {_finding_key(f): f for f in base}
-
+    cur_map = {c["fingerprint"]: c for c in current}
+    base_map = {c["fingerprint"]: c for c in previous}
     new_keys = cur_map.keys() - base_map.keys()
     resolved_keys = base_map.keys() - cur_map.keys()
-    unchanged_keys = cur_map.keys() & base_map.keys()
 
-    def to_diff(f) -> DiffFinding:
+    def to_diff(c: dict) -> DiffFinding:
+        loc = c["locations"][0]
         return DiffFinding(
-            secret_type=f.secret_type,
-            severity=f.severity,
-            file_path=f.file_path,
-            line_number=f.line_number,
-            risk_score=f.risk_score or 0,
+            secret_type=c["secret_type"], severity=c["severity"],
+            file_path=loc["file_path"], line_number=loc["line_number"],
+            risk_score=c["risk_score"],
         )
 
     return ScanDiffOut(
         has_baseline=True,
         baseline_scan_id=baseline.id,
         baseline_created_at=baseline.created_at,
-        current_total=len(cur),
-        baseline_total=len(base),
+        current_total=len(cur_map),
+        baseline_total=len(base_map),
         new_count=len(new_keys),
         resolved_count=len(resolved_keys),
-        unchanged_count=len(unchanged_keys),
-        net_change=len(cur) - len(base),
-        new_findings=[to_diff(cur_map[k]) for k in new_keys],
-        resolved_findings=[to_diff(base_map[k]) for k in resolved_keys],
+        unchanged_count=len(cur_map.keys() & base_map.keys()),
+        net_change=len(cur_map) - len(base_map),
+        # Riskiest first; set order would differ from one request to the next.
+        new_findings=sorted((to_diff(cur_map[k]) for k in new_keys), key=lambda d: -d.risk_score),
+        resolved_findings=sorted((to_diff(base_map[k]) for k in resolved_keys), key=lambda d: -d.risk_score),
     )
 
 
@@ -350,7 +354,11 @@ async def scan_websocket(websocket: WebSocket, scan_id: str):
     that is what surfaces the disconnect — sleeping instead would leave
     this coroutine (and its socket) alive until the process exits.
     """
-    await websocket.accept()
+    # Echo our subprotocol when offered: the client sends it alongside the
+    # token (see security._presented_token), and a browser drops the
+    # connection unless the server selects one of the protocols it offered.
+    offered = [p.strip() for p in websocket.headers.get("sec-websocket-protocol", "").split(",")]
+    await websocket.accept(subprotocol=WS_SUBPROTOCOL if WS_SUBPROTOCOL in offered else None)
     _ws_registry.setdefault(scan_id, []).append(websocket)
     try:
         while True:

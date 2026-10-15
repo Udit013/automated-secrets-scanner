@@ -72,6 +72,9 @@ def build_sarif(scan, findings: list) -> dict:
             }],
             "partialFingerprints": {
                 "secretsScanner/v1": f"{f.file_path}:{f.secret_type}:{f.matched_string}",
+                # The credential's identity, so a key that moves files is
+                # recognised as the same alert. Absent on pre-3.0 rows.
+                **({"cipherwatch/credential/v1": f.fingerprint} if getattr(f, "fingerprint", None) else {}),
             },
             "properties": {
                 "severity": f.severity,

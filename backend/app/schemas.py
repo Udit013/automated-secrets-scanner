@@ -2,7 +2,7 @@ import re
 
 from apscheduler.triggers.cron import CronTrigger
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import Optional, List
+from typing import Literal, Optional, List
 from datetime import datetime, timedelta, timezone
 
 # Public API guardrails
@@ -184,6 +184,9 @@ class StatsOut(BaseModel):
     by_type: dict
     recent_scans: List[ScanListItem]
     findings_over_time: List[dict]  # [{date, count}]
+    # Open credentials across the latest scan of every project — unlike the
+    # counts above, de-duplicated and net of triage.
+    exposure: Optional["ExposureOut"] = None
 
 
 # ─── Differential scanning ──────────────────────────────────────────────────
@@ -208,3 +211,127 @@ class ScanDiffOut(BaseModel):
     net_change: int = 0  # current_total - baseline_total
     new_findings: List[DiffFinding] = []
     resolved_findings: List[DiffFinding] = []
+
+
+# ─── Projects & credential inventory ────────────────────────────────────────
+
+CredentialStatus = Literal["open", "rotated", "false_positive", "accepted_risk"]
+MAX_REVIEW_WINDOW = timedelta(days=366)
+
+
+class CredentialLocation(BaseModel):
+    file_path: str
+    line_number: int
+    in_history: bool
+    commit_hash: Optional[str] = None
+
+
+class CredentialOut(BaseModel):
+    fingerprint: str
+    secret_type: str
+    secret_types: List[str]
+    severity: str
+    risk_score: int
+    risk_factors: List[str]
+    masked_value: str
+    status: str                       # effective: an expired accepted risk reads "open"
+    stored_status: str
+    review_overdue: bool
+    review_by: Optional[datetime] = None
+    note: str
+    triaged_at: Optional[datetime] = None
+    exposure: Literal["working_tree", "history_only"]
+    first_seen: Optional[datetime] = None
+    exposure_days: Optional[int] = None
+    commits_affected: Optional[int] = None
+    authors_count: Optional[int] = None
+    location_count: int
+    locations: List[CredentialLocation]
+    remediation: str
+    rotation_url: str
+
+
+class CredentialSummary(BaseModel):
+    total: int
+    open: int
+    open_by_severity: dict[str, int]
+    open_history_only: int
+    rotated: int
+    accepted_risk: int
+    false_positive: int
+    review_overdue: int
+
+
+class ProjectSchedule(BaseModel):
+    id: str
+    cron_expression: str
+    enabled: bool
+    next_run_at: Optional[datetime] = None
+
+
+class ProjectOut(BaseModel):
+    slug: str
+    source_ref: str
+    last_scan_id: Optional[str] = None
+    last_scanned_at: Optional[datetime] = None
+    files_scanned: int
+    history_scanned: bool
+    latest_status: Optional[str] = None
+    latest_scan_id: Optional[str] = None
+    summary: CredentialSummary
+    schedule: Optional[ProjectSchedule] = None
+
+
+class TrendPoint(BaseModel):
+    scan_id: str
+    completed_at: Optional[datetime] = None
+    credentials: int
+    open: int
+    critical_open: int
+    new: int
+    removed: int
+
+
+class ProjectDetailOut(ProjectOut):
+    trend: List[TrendPoint]
+
+
+class CredentialsOut(BaseModel):
+    scan_id: Optional[str] = None
+    credentials: List[CredentialOut]
+
+
+class TriageRequest(BaseModel):
+    status: CredentialStatus
+    note: str = Field(default="", max_length=2000)
+    # Required for accepted_risk, ignored otherwise: a waiver must expire.
+    review_by: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def _check_review(self):
+        if self.status != "accepted_risk":
+            self.review_by = None
+            return self
+        if self.review_by is None:
+            raise ValueError("Accepting a risk requires a review_by date")
+        review = self.review_by
+        if review.tzinfo is not None:  # stored naive-UTC, like every timestamp here
+            review = review.astimezone(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if review <= now:
+            raise ValueError("review_by must be in the future")
+        if review > now + MAX_REVIEW_WINDOW:
+            raise ValueError("review_by must be within a year")
+        self.review_by = review
+        return self
+
+
+class ExposureOut(BaseModel):
+    projects: int
+    open: int
+    open_history_only: int
+    open_by_severity: dict[str, int]
+    review_overdue: int
+
+
+StatsOut.model_rebuild()

@@ -10,6 +10,12 @@ class SecretPattern:
     severity: str  # CRITICAL | HIGH | MEDIUM | LOW
     format_specific: bool  # bypass entropy check
     remediation: str
+    # True when the regex matches a fixed marker (a PEM header, a JSON key)
+    # rather than the secret value, so the match cannot identify which
+    # credential it is — fingerprinting falls back to its location.
+    marker: bool = False
+    # Official page where this credential type is revoked or rotated.
+    rotation_url: str = ""
 
 
 PATTERNS: List[SecretPattern] = [
@@ -24,6 +30,7 @@ PATTERNS: List[SecretPattern] = [
             "3. Store in AWS Secrets Manager or environment variables.\n"
             "4. Add .env to .gitignore and use python-dotenv."
         ),
+        rotation_url="https://console.aws.amazon.com/iam/home#/security_credentials",
     ),
     SecretPattern(
         name="AWS Secret Access Key",
@@ -35,6 +42,7 @@ PATTERNS: List[SecretPattern] = [
             "2. Rotate the associated access key pair.\n"
             "3. Use IAM roles instead of long-lived credentials."
         ),
+        rotation_url="https://console.aws.amazon.com/iam/home#/security_credentials",
     ),
     SecretPattern(
         name="GitHub Personal Access Token",
@@ -46,6 +54,7 @@ PATTERNS: List[SecretPattern] = [
             "2. Use fine-grained tokens with minimal scopes.\n"
             "3. Store in environment variables or GitHub Actions secrets."
         ),
+        rotation_url="https://github.com/settings/tokens",
     ),
     SecretPattern(
         name="GitHub OAuth Token",
@@ -56,6 +65,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Revoke the OAuth token via GitHub API or settings.\n"
             "2. Never hardcode OAuth tokens — use environment variables."
         ),
+        rotation_url="https://github.com/settings/applications",
     ),
     SecretPattern(
         name="GitHub App Token",
@@ -66,6 +76,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Revoke via GitHub App settings.\n"
             "2. Store app credentials in environment variables."
         ),
+        rotation_url="https://github.com/settings/apps",
     ),
     SecretPattern(
         name="Google API Key",
@@ -77,6 +88,7 @@ PATTERNS: List[SecretPattern] = [
             "2. Create a new restricted key with only required APIs enabled.\n"
             "3. Store in environment variables or GCP Secret Manager."
         ),
+        rotation_url="https://console.cloud.google.com/apis/credentials",
     ),
     SecretPattern(
         name="GCP Service Account Key",
@@ -88,6 +100,8 @@ PATTERNS: List[SecretPattern] = [
             "2. Rotate by creating a new key.\n"
             "3. Use Workload Identity Federation instead of key files in production."
         ),
+        marker=True,
+        rotation_url="https://console.cloud.google.com/iam-admin/serviceaccounts",
     ),
     SecretPattern(
         name="Stripe Live Secret Key",
@@ -99,6 +113,7 @@ PATTERNS: List[SecretPattern] = [
             "2. Monitor for unauthorized charges.\n"
             "3. Use Stripe's restricted keys with minimum permissions."
         ),
+        rotation_url="https://dashboard.stripe.com/apikeys",
     ),
     SecretPattern(
         name="Stripe Test Secret Key",
@@ -109,6 +124,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Roll the test key in Stripe Dashboard.\n"
             "2. Store in environment variables — test keys should still be treated as secrets."
         ),
+        rotation_url="https://dashboard.stripe.com/test/apikeys",
     ),
     SecretPattern(
         name="Slack Bot Token",
@@ -119,6 +135,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Revoke the token at api.slack.com/apps → OAuth & Permissions.\n"
             "2. Rotate and store in environment variables."
         ),
+        rotation_url="https://api.slack.com/apps",
     ),
     SecretPattern(
         name="Slack App Token",
@@ -129,6 +146,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Revoke at api.slack.com/apps.\n"
             "2. Store in environment variables."
         ),
+        rotation_url="https://api.slack.com/apps",
     ),
     SecretPattern(
         name="Twilio API Key",
@@ -139,6 +157,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Revoke the API key in Twilio Console → Account → API Keys.\n"
             "2. Store in environment variables."
         ),
+        rotation_url="https://console.twilio.com/us1/account/keys-credentials/api-keys",
     ),
     SecretPattern(
         name="SendGrid API Key",
@@ -149,6 +168,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Revoke the key at app.sendgrid.com → Settings → API Keys.\n"
             "2. Create a new key with minimum required permissions."
         ),
+        rotation_url="https://app.sendgrid.com/settings/api_keys",
     ),
     SecretPattern(
         name="Private SSH Key",
@@ -160,6 +180,7 @@ PATTERNS: List[SecretPattern] = [
             "2. Generate a new key pair: ssh-keygen -t ed25519.\n"
             "3. Private keys must NEVER be committed — add to .gitignore."
         ),
+        marker=True,
     ),
     SecretPattern(
         name="PGP Private Key",
@@ -170,6 +191,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Revoke the PGP key and publish a revocation certificate.\n"
             "2. Generate a new key pair and update all trusted parties."
         ),
+        marker=True,
     ),
     SecretPattern(
         name="JWT Token",
@@ -235,6 +257,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Rotate the key in Azure Portal → Storage Account → Access Keys.\n"
             "2. Use Azure Managed Identities instead of storage keys."
         ),
+        rotation_url="https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/Microsoft.Storage%2FStorageAccounts",
     ),
     SecretPattern(
         name="Azure SAS Token",
@@ -245,6 +268,8 @@ PATTERNS: List[SecretPattern] = [
             "1. Revoke the SAS token by rotating the storage account key.\n"
             "2. Use short-lived SAS tokens with minimum required permissions."
         ),
+        marker=True,
+        rotation_url="https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/Microsoft.Storage%2FStorageAccounts",
     ),
     SecretPattern(
         name="npm Auth Token",
@@ -256,6 +281,7 @@ PATTERNS: List[SecretPattern] = [
             "2. Add .npmrc to .gitignore.\n"
             "3. Use CI/CD environment variables for npm auth."
         ),
+        rotation_url="https://docs.npmjs.com/revoking-access-tokens",
     ),
     SecretPattern(
         name="PyPI API Token",
@@ -266,6 +292,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Revoke the token at pypi.org/manage/account/token/.\n"
             "2. Use CI/CD secrets for publishing."
         ),
+        rotation_url="https://pypi.org/manage/account/token/",
     ),
     SecretPattern(
         name="Discord Bot Token",
@@ -276,6 +303,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Regenerate the token in Discord Developer Portal.\n"
             "2. Store in environment variables."
         ),
+        rotation_url="https://discord.com/developers/applications",
     ),
     SecretPattern(
         name="Mailgun API Key",
@@ -286,6 +314,7 @@ PATTERNS: List[SecretPattern] = [
             "1. Revoke the key in Mailgun dashboard → API Keys.\n"
             "2. Store in environment variables."
         ),
+        rotation_url="https://app.mailgun.com/settings/api_security",
     ),
 ]
 

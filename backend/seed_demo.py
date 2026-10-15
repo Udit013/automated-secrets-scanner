@@ -4,16 +4,24 @@ Populates the database with realistic scan history, including Git-history
 lifecycle data, exposure risk scores, and a re-scan so the differential
 view has a baseline to compare against.
 
-Safe to re-run: skips if data already exists.
+Safe to re-run: it writes nothing if the database already holds any scan,
+or if the server is configured as a private workspace (ACCESS_TOKEN set),
+so sample data can never be mixed into real data.
 """
 
 import asyncio
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 
 from app.database import init_db, AsyncSessionLocal
-from app.models import Scan, Finding
+from app.config import settings
+from app.models import AppSetting, CredentialState, Scan, Finding
+from app.scanner.core import fingerprint
+from app.scanner.patterns import PATTERNS
 from app.scanner.risk import compute_risk_score
+
+_PATTERN = {p.name: p for p in PATTERNS}
 
 # Finding tuple: (severity, secret_type, masked, entropy, file_path, line, in_history)
 DEMO_SCANS = [
@@ -56,7 +64,7 @@ DEMO_SCANS = [
     },
     {
         "source_type": "paste",
-        "source_ref": "paste",
+        "source_ref": "paste:" + hashlib.sha256(b"demo paste").hexdigest()[:12],
         "days_ago": 6,
         "files": 1,
         "scan_git_history": False,
@@ -183,13 +191,36 @@ def _lifecycle(in_history: bool, scan_dt: datetime, seed: int):
     }
 
 
+# Triage decisions shown in the demo, keyed by (repo, secret type, masked value).
+# Each illustrates one state of the credential lifecycle.
+DEMO_TRIAGE = [
+    ("payment-service", "AWS Secret Access Key", "wJal***...***KEY", "rotated", 0,
+     "Key pair deactivated in IAM; replacement issued from Secrets Manager."),
+    ("payment-service", "JWT Token", "eyJ***...***Abc", "false_positive", 0,
+     "Fixture token signed with a throwaway test key."),
+    ("data-pipeline", "Generic API Key", "a1b2***...***56", "accepted_risk", 21,
+     "Sandbox Kafka credential, network-isolated. Re-review before GA."),
+    ("auth-service", "Hardcoded Password", "Auth***...***321!", "accepted_risk", -3,
+     "Local-only test account."),  # review date already passed -> reads as open again
+]
+
+
+def _demo_fingerprint(stype: str, masked: str, fpath: str) -> str:
+    """Demo rows have no raw secret; fingerprint the masked value instead."""
+    pattern = _PATTERN[stype]
+    return fingerprint(f"demo:{stype}:{masked}", pattern, fpath, masked)
+
+
 async def seed():
+    if settings.ACCESS_TOKEN:
+        print("ACCESS_TOKEN is set (private workspace); not seeding demo data.")
+        return
     await init_db()
     async with AsyncSessionLocal() as db:
         from sqlalchemy import select, func
         count = (await db.execute(select(func.count(Scan.id)))).scalar_one()
-        if count >= len(DEMO_SCANS):
-            print(f"Already seeded ({count} scans). Skipping.")
+        if count:
+            print(f"Database already has {count} scan(s); not seeding demo data.")
             return
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -245,9 +276,26 @@ async def seed():
                     exposure_days=lc.get("exposure_days"),
                     commits_affected=lc.get("commits_affected"),
                     authors_count=lc.get("authors_count"),
+                    fingerprint=_demo_fingerprint(stype, masked, fpath),
                 ))
                 total_findings += 1
 
+        for repo, stype, masked, status, review_days, note in DEMO_TRIAGE:
+            ref = f"https://github.com/acme-corp/{repo}"
+            fpath = next(
+                f[4] for s in DEMO_SCANS if s["source_ref"] == ref
+                for f in s["findings"] if f[1] == stype and f[2] == masked
+            )
+            db.add(CredentialState(
+                source_ref=ref,
+                fingerprint=_demo_fingerprint(stype, masked, fpath),
+                status=status,
+                note=note,
+                review_by=now + timedelta(days=review_days) if status == "accepted_risk" else None,
+            ))
+
+        # Lets the UI label this workspace as sample data.
+        db.add(AppSetting(key="demo_seeded", value="1"))
         await db.commit()
         print(f"Seeded {len(DEMO_SCANS)} scans with {total_findings} findings.")
 

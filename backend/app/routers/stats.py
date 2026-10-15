@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models import Scan, Finding
 from ..schemas import StatsOut, ScanListItem
+from ..services import inventory
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 
@@ -66,4 +67,5 @@ async def get_stats(db: Annotated[AsyncSession, Depends(get_db)]):
         by_type=by_type,
         recent_scans=[ScanListItem.model_validate(s) for s in recent],
         findings_over_time=findings_over_time,
+        exposure=await inventory.exposure_totals(db),
     )

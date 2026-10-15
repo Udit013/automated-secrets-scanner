@@ -4,7 +4,7 @@ Uses AsyncIOScheduler with in-memory job store.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -13,7 +13,9 @@ from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
-_scheduler = AsyncIOScheduler()
+# Cron expressions are interpreted in UTC everywhere — the same zone the
+# schema validator uses — so a schedule means the same moment on any host.
+_scheduler = AsyncIOScheduler(timezone=timezone.utc)
 
 
 def start_scheduler():
@@ -73,7 +75,8 @@ def add_schedule(
 
     minute, hour, day, month, weekday = parts
     trigger = CronTrigger(
-        minute=minute, hour=hour, day=day, month=month, day_of_week=weekday
+        minute=minute, hour=hour, day=day, month=month, day_of_week=weekday,
+        timezone=timezone.utc,
     )
 
     _scheduler.add_job(
@@ -124,20 +127,24 @@ async def restore_schedules() -> int:
 
 def _next_run_time(job) -> Optional[datetime]:
     """
-    Safe accessor: a Job only gains `next_run_time` once the scheduler is
-    running; before that (e.g. during startup or in tests) the attribute
-    does not exist at all. Fall back to computing it from the trigger.
+    Next fire time as naive UTC, the convention for every stored timestamp.
+
+    APScheduler returns timezone-aware datetimes; written to a naive column,
+    SQLite stores them silently but Postgres rejects them. A Job also only
+    gains `next_run_time` once the scheduler is running, so fall back to
+    computing it from the trigger before then.
     """
     if job is None:
         return None
     nrt = getattr(job, "next_run_time", None)
-    if nrt is not None:
-        return nrt
-    try:
-        from datetime import timezone
-        return job.trigger.get_next_fire_time(None, datetime.now(timezone.utc))
-    except Exception:
+    if nrt is None:
+        try:
+            nrt = job.trigger.get_next_fire_time(None, datetime.now(timezone.utc))
+        except Exception:
+            return None
+    if nrt is None:
         return None
+    return nrt.astimezone(timezone.utc).replace(tzinfo=None) if nrt.tzinfo else nrt
 
 
 def remove_schedule(schedule_id: str):

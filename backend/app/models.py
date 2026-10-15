@@ -1,6 +1,8 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, Integer, Float, Boolean, DateTime, Text, ForeignKey, JSON
+from sqlalchemy import (
+    String, Integer, Float, Boolean, DateTime, Text, ForeignKey, JSON, UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 
@@ -19,7 +21,10 @@ class Scan(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     source_type: Mapped[str] = mapped_column(String(20))  # github | upload | paste
-    source_ref: Mapped[str] = mapped_column(Text)  # URL, filename, or "paste"
+    # GitHub URL, or a `paste:<digest>` label (pasted content is never stored).
+    # Short in both cases, so it is safe to index; the diff and project views
+    # look scans up by it.
+    source_ref: Mapped[str] = mapped_column(String(300), index=True)
     scan_git_history: Mapped[bool] = mapped_column(Boolean, default=False)
     max_commits: Mapped[int] = mapped_column(Integer, default=100)
     min_entropy: Mapped[float] = mapped_column(Float, default=3.5)
@@ -67,6 +72,10 @@ class Finding(Base):
     commits_affected: Mapped[int | None] = mapped_column(Integer, nullable=True)
     authors_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Credential identity across files, commits, and scans (HMAC; never the
+    # raw secret). Null only for rows written before fingerprints existed.
+    fingerprint: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+
     scan: Mapped["Scan"] = relationship("Scan", back_populates="findings")
 
 
@@ -84,3 +93,36 @@ class ScanSchedule(Base):
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_scan_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+
+
+CREDENTIAL_STATUSES = ("open", "rotated", "false_positive", "accepted_risk")
+
+
+class CredentialState(Base):
+    """
+    Triage decision for one credential in one project. Keyed by fingerprint
+    rather than by finding, so it carries over to every future scan and to
+    every file and commit the credential appears in.
+    """
+
+    __tablename__ = "credential_states"
+    __table_args__ = (UniqueConstraint("source_ref", "fingerprint", name="uq_credential_state"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    source_ref: Mapped[str] = mapped_column(String(300), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    note: Mapped[str] = mapped_column(Text, default="")
+    # Accepted risks expire: past this date the credential counts as open
+    # again, so a waiver can't silently outlive the reason for it.
+    review_by: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
+
+
+class AppSetting(Base):
+    """Small key/value store for install-level settings (e.g. the fingerprint key)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)

@@ -135,18 +135,17 @@ async def scan_github_repo(
         if progress_callback:
             await progress_callback(20, "Extracted repository")
 
-        findings, files_scanned = await asyncio.to_thread(scan_directory, src_dir, min_entropy)
+        # A zipball wraps the repo in one "{owner}-{repo}-{sha}" directory.
+        # Scan from inside it so paths are repo-relative and stay identical
+        # from one commit to the next.
+        entries = os.listdir(src_dir)
+        repo_root = os.path.join(src_dir, entries[0]) if (
+            len(entries) == 1 and os.path.isdir(os.path.join(src_dir, entries[0]))
+        ) else src_dir
+        findings, files_scanned = await asyncio.to_thread(scan_directory, repo_root, min_entropy)
 
         if progress_callback:
             await progress_callback(80, f"Scanned {files_scanned} files")
-
-        # Fix file paths to look like repo paths
-        prefix_len = len(src_dir) + 1
-        for f in findings:
-            raw = f.file_path[prefix_len:]
-            # Remove the top-level owner-repo-hash dir
-            parts = raw.split(os.sep, 1)
-            f.file_path = parts[1] if len(parts) > 1 else raw
 
         if scan_git_history_flag:
             if progress_callback:
