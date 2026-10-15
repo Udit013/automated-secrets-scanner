@@ -1,0 +1,66 @@
+name: CipherWatch secret scan
+description: Fail the build on new leaked credentials. Baseline-aware, SARIF output, no secrets in logs.
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  path:
+    description: Directory to scan
+    default: "."
+  fail-on:
+    description: "Lowest severity that fails the job: critical, high, medium, low, or none"
+    default: high
+  baseline:
+    description: Baseline file of already-accepted credentials (skipped if the file does not exist)
+    default: .cipherwatch-baseline.json
+  history:
+    description: Also scan git history (needs actions/checkout with fetch-depth 0)
+    default: "false"
+  max-commits:
+    description: Commits of history to walk when history is enabled
+    default: "100"
+  sarif-file:
+    description: Where to write the SARIF report, for github/codeql-action/upload-sarif
+    default: cipherwatch.sarif
+
+outputs:
+  sarif-file:
+    description: Path of the SARIF report
+    value: ${{ inputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    # A private interpreter: update-environment: false keeps this action from
+    # replacing the Python the calling workflow set up for its own steps.
+    - uses: actions/setup-python@v5
+      id: py
+      with:
+        python-version: "3.11"
+        update-environment: false
+    - name: Install scanner dependencies
+      shell: bash
+      env:
+        CW_PYTHON: ${{ steps.py.outputs.python-path }}
+      run: |
+        "$CW_PYTHON" -m venv "$RUNNER_TEMP/cipherwatch-venv"
+        "$RUNNER_TEMP/cipherwatch-venv/bin/python" -m pip install --quiet --disable-pip-version-check "GitPython>=3.1.40,<4"
+    - name: Scan
+      shell: bash
+      env:
+        CW_PATH: ${{ inputs.path }}
+        CW_FAIL_ON: ${{ inputs.fail-on }}
+        CW_BASELINE: ${{ inputs.baseline }}
+        CW_HISTORY: ${{ inputs.history }}
+        CW_MAX_COMMITS: ${{ inputs.max-commits }}
+        CW_SARIF: ${{ inputs.sarif-file }}
+      # Inputs travel through env vars, never interpolated into the script,
+      # so a crafted input cannot inject shell commands.
+      run: |
+        args=(scan "$CW_PATH" --fail-on "$CW_FAIL_ON" --max-commits "$CW_MAX_COMMITS")
+        [ "$CW_HISTORY" = "true" ] && args+=(--history)
+        [ -f "$CW_BASELINE" ] && args+=(--baseline "$CW_BASELINE")
+        # One scan: a masked, human-readable summary in the log, the SARIF
+        # report on disk, and the exit code as the gate.
+        "$RUNNER_TEMP/cipherwatch-venv/bin/python" "$GITHUB_ACTION_PATH/cli.py" "${args[@]}" --sarif "$CW_SARIF"

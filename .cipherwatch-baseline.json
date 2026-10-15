@@ -1,0 +1,233 @@
+{
+  "version": 1,
+  "key_id": "36e1268d47c0",
+  "generated_at": "2026-10-15T14:29:17Z",
+  "note": "Credentials accepted as of generation. Review entries before committing; rotate anything real.",
+  "credentials": [
+    {
+      "fingerprint": "6da62fdee71be83723d0183c473b5ed3",
+      "secret_type": "PGP Private Key",
+      "file_path": "backend/app/scanner/patterns.py"
+    },
+    {
+      "fingerprint": "c52acf5f2c8d0acd3b8f956753c1a7a9",
+      "secret_type": "Hardcoded Password",
+      "file_path": "backend/app/scanner/remediation.py"
+    },
+    {
+      "fingerprint": "13fb75529cebb953450cd6129786cc66",
+      "secret_type": "GCP Service Account Key",
+      "file_path": "backend/seed_demo.py"
+    },
+    {
+      "fingerprint": "d1f6c2e399bf57177e9c262aa30bcf5a",
+      "secret_type": "AWS Access Key",
+      "file_path": "backend/tests/test_api.py"
+    },
+    {
+      "fingerprint": "5d3e6ff653d38c0a7834c9474e4d6523",
+      "secret_type": "Database Connection String",
+      "file_path": "backend/tests/test_api.py"
+    },
+    {
+      "fingerprint": "086596b8bfe847789ce1da619e798bd6",
+      "secret_type": "Hardcoded Password",
+      "file_path": "backend/tests/test_cli.py"
+    },
+    {
+      "fingerprint": "faf6520c322265d5f1a62b779d3574d4",
+      "secret_type": "Hardcoded Password",
+      "file_path": "backend/tests/test_inventory.py"
+    },
+    {
+      "fingerprint": "b8b797417c0b8abb772f445f3fd8213c",
+      "secret_type": "Private SSH Key",
+      "file_path": "backend/tests/test_inventory.py"
+    },
+    {
+      "fingerprint": "cc99f4b3360efddbbe776459ea488f9c",
+      "secret_type": "Generic API Key",
+      "file_path": "demo/.env.example"
+    },
+    {
+      "fingerprint": "ad9ab2c9e92bfb17a5ed8266a988e34b",
+      "secret_type": "Generic Secret",
+      "file_path": "demo/.env.example"
+    },
+    {
+      "fingerprint": "6f3e3a6b7cadfe99ad5512119a0dd544",
+      "secret_type": "Stripe Live Secret Key",
+      "file_path": "demo/.env.example"
+    },
+    {
+      "fingerprint": "52aa220cd7dbd9b0a0415aa834c8a977",
+      "secret_type": "GitHub Personal Access Token",
+      "file_path": "demo/config.json"
+    },
+    {
+      "fingerprint": "47e2429b665c76aeaf658e8ea43fc3de",
+      "secret_type": "Hardcoded Password",
+      "file_path": "demo/config.json"
+    },
+    {
+      "fingerprint": "97b60d128b3b082fbfe02a7e1327516f",
+      "secret_type": "Database Connection String",
+      "file_path": "demo/config/settings.py"
+    },
+    {
+      "fingerprint": "efc77df20aebe18f907b026153fde027",
+      "secret_type": "Generic API Key",
+      "file_path": "demo/config/settings.py"
+    },
+    {
+      "fingerprint": "d47fb26e4629d135879d5a1235e80cbe",
+      "secret_type": "Generic API Key",
+      "file_path": "demo/config/settings.py"
+    },
+    {
+      "fingerprint": "e9ea570ed52945f8b3257cf1ac01fbbb",
+      "secret_type": "Google API Key",
+      "file_path": "demo/config/settings.py"
+    },
+    {
+      "fingerprint": "c52d070f72c6f22045f6453090482b54",
+      "secret_type": "Hardcoded Password",
+      "file_path": "demo/config/settings.py"
+    },
+    {
+      "fingerprint": "bc39db9b7385cfe1731c0e9b5f3187ec",
+      "secret_type": "Database Connection String",
+      "file_path": "demo/config/template.py"
+    },
+    {
+      "fingerprint": "3c0ba91f2bea907899f2fd2f16e712f4",
+      "secret_type": "Generic API Key",
+      "file_path": "demo/mixed_content.py"
+    },
+    {
+      "fingerprint": "22c37123c505bcfb3aed9d68a41a4510",
+      "secret_type": "Hardcoded Password",
+      "file_path": "demo/mixed_content.py"
+    },
+    {
+      "fingerprint": "5f10a06ccddd583b87bd4d44dfaa1ce2",
+      "secret_type": "Stripe Test Secret Key",
+      "file_path": "demo/mixed_content.py"
+    },
+    {
+      "fingerprint": "368616e050f03ed807a7cf21bac5da4f",
+      "secret_type": "Generic API Key",
+      "file_path": "demo/sample_code.py"
+    },
+    {
+      "fingerprint": "8e59a70c0d79b4aada5ab9a8377d8fb5",
+      "secret_type": "Generic API Key",
+      "file_path": "demo/sample_code.py"
+    },
+    {
+      "fingerprint": "5455d5f6a314d8766c32e3984eafd02a",
+      "secret_type": "Hardcoded Password",
+      "file_path": "demo/sample_code.py"
+    },
+    {
+      "fingerprint": "b3b0eb6f662206a12617d7b46cea70e7",
+      "secret_type": "Generic API Key",
+      "file_path": "demo_generator.py"
+    },
+    {
+      "fingerprint": "db079b928134b869297cd3d5a1b57e68",
+      "secret_type": "Generic API Key",
+      "file_path": "demo_generator.py"
+    },
+    {
+      "fingerprint": "9d3a3f50259ba4d36aac2987f11f643c",
+      "secret_type": "Generic API Key",
+      "file_path": "demo_generator.py"
+    },
+    {
+      "fingerprint": "f5639b542754ae303f61dd869fa0508b",
+      "secret_type": "Generic API Key",
+      "file_path": "demo_generator.py"
+    },
+    {
+      "fingerprint": "b5d1827a0857b9878e1cb41402db83c0",
+      "secret_type": "Generic Secret",
+      "file_path": "demo_generator.py"
+    },
+    {
+      "fingerprint": "40485f9778693165c81dab02247bdb1b",
+      "secret_type": "Hardcoded Password",
+      "file_path": "demo_generator.py"
+    },
+    {
+      "fingerprint": "b537dc49bdcb51cd7bee7eb782bffd8f",
+      "secret_type": "Hardcoded Password",
+      "file_path": "demo_generator.py"
+    },
+    {
+      "fingerprint": "c3ac952d28b2799a555725d3a414e4b6",
+      "secret_type": "Hardcoded Password",
+      "file_path": "demo_generator.py"
+    },
+    {
+      "fingerprint": "5a06ed7d5bb17352969b9861cef8d3c8",
+      "secret_type": "AWS Access Key",
+      "file_path": "evaluate_performance.py"
+    },
+    {
+      "fingerprint": "33efc98b81c62ca31a221923f601a1d1",
+      "secret_type": "Database Connection String",
+      "file_path": "evaluate_performance.py"
+    },
+    {
+      "fingerprint": "462fce7f40a8e0fd133527d509543967",
+      "secret_type": "GitHub App Token",
+      "file_path": "evaluate_performance.py"
+    },
+    {
+      "fingerprint": "7e5272ca6186978b6f856726290e7788",
+      "secret_type": "GitHub OAuth Token",
+      "file_path": "evaluate_performance.py"
+    },
+    {
+      "fingerprint": "f638f199b4a0cc00ef759ad4e1ac5c10",
+      "secret_type": "JWT Token",
+      "file_path": "evaluate_performance.py"
+    },
+    {
+      "fingerprint": "9fbc6f82283a5f456b5b38efcf008077",
+      "secret_type": "Private SSH Key",
+      "file_path": "evaluate_performance.py"
+    },
+    {
+      "fingerprint": "33eec6add41d536e2799615a90cb64c8",
+      "secret_type": "Private SSH Key",
+      "file_path": "evaluate_performance.py"
+    },
+    {
+      "fingerprint": "05c31412092dfd40f00076c7c965bf5a",
+      "secret_type": "Database Connection String",
+      "file_path": "quick_test.py"
+    },
+    {
+      "fingerprint": "d6262f21fb85878f54cc8b61f406680a",
+      "secret_type": "Private SSH Key",
+      "file_path": "quick_test.py"
+    },
+    {
+      "fingerprint": "771b9fd601089848863bfa5daddfa6cb",
+      "secret_type": "Hardcoded Password",
+      "file_path": "test_scanner.py"
+    },
+    {
+      "fingerprint": "d1edabffce8f51a790c2270778b7b726",
+      "secret_type": "JWT Token",
+      "file_path": "test_scanner.py"
+    },
+    {
+      "fingerprint": "03ebf99fde0e31184e532ab7720103a6",
+      "secret_type": "Private SSH Key",
+      "file_path": "test_scanner.py"
+    }
+  ]
+}

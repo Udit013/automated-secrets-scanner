@@ -25,8 +25,8 @@ jobs:
       - name: Run API + scanner unit tests
         run: python -m pytest tests/ -v
 
-  scanner-cli:
-    name: Scanner CLI tests
+  legacy-scanner:
+    name: Legacy scanner module tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +40,7 @@ jobs:
         run: python -m pytest test_scanner.py -v
 
   frontend:
-    name: Frontend typecheck + build
+    name: Frontend lint + typecheck + build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -54,29 +54,31 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Lint (zero warnings)
+        run: npm run lint
       - name: Typecheck and build
         run: npm run build
 
   self-scan:
-    name: Dogfood — scan this repo for secrets
+    name: Dogfood — gate this repo on new secrets
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Scan own source tree
-        # Test fixtures intentionally contain fake secrets, so this job
-        # publishes the report rather than failing the build.
+          fetch-depth: 0
+      # The repo's own action. Test fixtures and demo files are recorded in
+      # .cipherwatch-baseline.json, so only a newly introduced credential fails.
+      - uses: ./
+        id: cipherwatch
+        with:
+          fail-on: high
+      - name: Upload SARIF to code scanning
+        if: always() && github.event_name == 'push'
         continue-on-error: true
-        run: python cli.py -d . -o self-scan.json --format json --stats
-      - name: Upload scan report
-        if: always()
-        uses: actions/upload-artifact@v4
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          name: self-scan-report
-          path: self-scan.json
-          if-no-files-found: ignore
+          sarif_file: ${{ steps.cipherwatch.outputs.sarif-file }}
+          category: cipherwatch
