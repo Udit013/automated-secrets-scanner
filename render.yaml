@@ -1,13 +1,31 @@
+# Free-tier blueprint. Out of the box this runs the public demo: SQLite on
+# the instance's ephemeral disk, reseeded with sample data on every start.
+#
+# For a private workspace that keeps its data:
+#   DATABASE_URL  -> a free Postgres (e.g. Neon): postgresql+asyncpg://...
+#   ACCESS_TOKEN  -> a long random value (python -c "import secrets; print(secrets.token_urlsafe(32))")
+#   SEED_DEMO     -> "0"
 services:
   - type: web
     name: secrets-scanner-api
     env: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: python seed_demo.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: sh -c 'if [ "$SEED_DEMO" = "1" ]; then python seed_demo.py; fi; exec uvicorn app.main:app --host 0.0.0.0 --port $PORT'
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         value: sqlite+aiosqlite:///./secrets_scanner.db
+      - key: SEED_DEMO
+        value: "1"
+      - key: ACCESS_TOKEN
+        sync: false
+      - key: FINGERPRINT_KEY
+        sync: false
+      # Render terminates TLS at one proxy that appends the client address
+      # to X-Forwarded-For; rate limits key on that address.
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
       - key: CORS_ORIGINS
         value: https://cipherwatch-web.vercel.app,https://automated-secrets-scanner.vercel.app
       - key: GITHUB_TOKEN

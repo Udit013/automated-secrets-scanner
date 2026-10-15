@@ -1,430 +1,295 @@
 # CipherWatch
 
-> **Production-ready DevSecOps platform** for detecting hardcoded secrets in source code and git history — combining regex pattern matching, Shannon entropy analysis, and placeholder filtering — with exposure risk scoring, a real-time ops console, REST API, scan scheduling, and email alerting.
+> **A credential exposure ledger.** CipherWatch finds leaked credentials in GitHub repositories and their git history, collapses every copy of a credential into one record, and keeps it on the ledger until someone rotates it, dismisses it, or accepts the risk with an expiry date. Its CLI and GitHub Action fail CI on *new* leaks only.
 
-**Live Demo:** [https://automated-secrets-scanner.vercel.app](https://automated-secrets-scanner.vercel.app)  
-**API Docs:** [https://secrets-scanner-api.onrender.com/docs](https://secrets-scanner-api.onrender.com/docs)
+**Live demo:** [cipherwatch-web.vercel.app](https://cipherwatch-web.vercel.app) · **API docs:** [secrets-scanner-api.onrender.com/docs](https://secrets-scanner-api.onrender.com/docs)
+<sub>Deployed from `main`; the API's [`/health`](https://secrets-scanner-api.onrender.com/health) reports the running version.</sub>
 
 [![CI](https://github.com/Udit013/automated-secrets-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/Udit013/automated-secrets-scanner/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=black)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white)](https://typescriptlang.org)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind-3-38bdf8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+
+---
+
+## Why a ledger, not another scanner
+
+Finding a leaked key is the easy half. GitGuardian's [State of Secrets Sprawl 2025](https://blog.gitguardian.com/the-state-of-secrets-sprawl-2025/) reports that 70% of the secrets leaked in 2022 were still valid. The gap is follow-through: line-level scanner output can't tell you which *credentials* are exposed, which are already handled, or whether last night's scan found anything new.
+
+Open-source scanners such as Gitleaks and TruffleHog are strong at detection, and Gitleaks supports baselines in CI ([comparison](https://appsecsanta.com/gitleaks-vs-trufflehog), [baseline workflow](https://tessl.io/registry/testland/gitleaks-scanning/files/references/baseline.md)). CipherWatch concentrates on what happens after detection:
+
+| | What it does |
+|---|---|
+| **One credential, one record** | Each value gets a keyed HMAC fingerprint, so the same AWS key in five files and many commits is one credential with several locations, not one finding per copy. The fingerprint never contains the secret. |
+| **Decisions that persist** | Mark a credential `rotated`, `false_positive`, or `accepted_risk`. Decisions are stored per project and fingerprint, so they follow the credential through later scans, file moves, and line shifts. |
+| **Waivers that expire** | `accepted_risk` requires a review date at most 366 days out. Once it passes, the credential reads *open · review overdue* again on its own. |
+| **History-aware exposure** | Every credential is labelled **in code** or **history only**. Deleting a file doesn't remove a key from existing clones, so history-only credentials stay open until rotated. |
+| **Rotation links** | 19 credential types across 12 providers (AWS, GitHub, Google Cloud, Stripe, Slack, Twilio, SendGrid, Azure, npm, PyPI, Discord, Mailgun) link to the provider page where the key is revoked; for npm, its revocation guide. |
+| **Alerts that mean something** | With SMTP configured, a scan emails only for CRITICAL credentials that were absent from the previous scan of the project and haven't been triaged. |
+| **CI gate on new leaks** | A CLI and a composite GitHub Action with a committed baseline (fingerprints only, safe to commit), `--fail-on` thresholds, and SARIF 2.1.0 for GitHub code scanning. |
+
+### Deliberately out of scope
+
+- **Live key verification.** Testing whether a leaked key works means *using someone else's credential*. Every detection is treated as live until a person decides otherwise.
+- **Storing secrets.** Findings keep a masked value, the source line with every detected secret masked, and a fingerprint. Pasted text is scanned in memory and never written to the database.
+- **AI in the detection path.** Detection is deterministic patterns plus entropy, and every risk score lists the factors behind it.
+- **Paid infrastructure.** Everything runs locally or on free tiers (see [Zero-cost deployment](#zero-cost-deployment)).
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                   React Frontend (Vite + TS)                 │
-│   Dashboard · New Scan · History · Scan Detail · Schedules   │
-│   Custom SVG charts · TanStack Query v5 · WebSocket progress │
-└─────────────────────┬────────────────────────────────────────┘
-                      │  HTTP / WebSocket
-┌─────────────────────▼────────────────────────────────────────┐
-│              FastAPI Backend  (Python 3.11)                  │
-│   REST API · WebSocket endpoint · Background scan tasks      │
-│   APScheduler (cron recurring scans) · aiosmtplib alerts     │
-└─────────────────────┬────────────────────────────────────────┘
-                      │  SQLAlchemy 2.0 async
-┌─────────────────────▼────────────────────────────────────────┐
-│           PostgreSQL (prod)  /  SQLite (dev/free tier)       │
-│   scans  ·  findings  ·  scan_schedules                      │
-└──────────────────────────────────────────────────────────────┘
+                 ┌──────────────────────────────┐
+  CLI / Action ──┤  scanner (pure Python)       │  patterns · entropy · git history · fingerprints
+                 └──────────────┬───────────────┘
+                                │ same engine
+┌───────────────────────────────▼──────────────────────────────────┐
+│ FastAPI (async)                                                   │
+│  /scans  /projects  /projects/{o}/{r}/credentials  /export        │
+│  /schedules  /stats  /health   WebSocket progress                 │
+│  optional access token · per-IP rate limit · concurrency cap      │
+│  APScheduler (UTC cron) · aiosmtplib alerts                       │
+└───────────────────────────────┬──────────────────────────────────┘
+                                │ SQLAlchemy 2.0 async
+               SQLite (local / demo)  ·  PostgreSQL (e.g. Neon free tier)
+               scans · findings · credential_states · scan_schedules · app_settings
+
+React 18 + TypeScript console (Vite 6, React Router 7, TanStack Query, Tailwind CSS 3)
+  Landing · Overview · Projects · Credential ledger + triage · Scans · Schedules
 ```
 
 ---
 
-## Features
+## The console
 
-| Feature | Description |
-|---------|-------------|
-| **26 Secret Patterns** | AWS keys, GCP credentials, GitHub tokens, Stripe, Slack, Twilio, SendGrid, Discord, SSH/PGP private keys, JWTs, DB connection strings, Azure, npm/PyPI tokens |
-| **Shannon Entropy Analysis** | Gates the 3 shape-less generic patterns (API key, secret, password) on randomness, so low-randomness values are dropped (threshold configurable) |
-| **No Raw Secret Retention** | Every detected secret is masked in stored context; pasted content is never persisted (only a SHA-256 digest label) |
-| **CRITICAL / HIGH / MEDIUM / LOW** | Severity scored by secret type, entropy level, and file context |
-| **False-Positive Suppression** | Placeholder detection (14 regex patterns + unique-char ratio), test-file severity downgrading, comment-line skipping |
-| **Exposure Risk Score** | Transparent 0–100 score per finding combining severity, Git-history presence, occurrences, exposure duration, and entropy — with human-readable reasoning |
-| **Secret Lifecycle Timeline** | Git-history exposure intelligence: introduced date, last-seen date, exposure duration, commits affected, and number of authors involved |
-| **Differential Scanning** | Compares a scan against the previous scan of the same source — new vs. resolved secrets and a net-change summary |
-| **GitHub Repo Scanning** | Scans any public GitHub repo via API zipball — no `git clone` required |
-| **Git History Scanning** | Traverses all commits with GitPython — catches secrets added and later deleted |
-| **Real-Time Progress** | WebSocket endpoint streams live scan progress to the React frontend |
-| **Dashboard** | KPI cards, severity pie chart, findings-over-time line chart, top-secret-types bar chart, differential summary, recent scans table |
-| **Remediation Patch Generator** | Generates env-var code replacements, a `.env.example` snippet, next-step guidance, and a downloadable `remediation.patch` — no repo write access required |
-| **Export** | Download scan results as JSON, CSV, or **SARIF 2.1.0** (GitHub Advanced Security compatible) |
-| **Scan Scheduling** | Cron-based recurring scans via APScheduler — set it and forget it |
-| **Email Alerts** | SMTP notification when a CRITICAL finding is detected (free with Gmail App Password) |
-| **REST API** | Fully documented OpenAPI/Swagger — drop into any CI/CD pipeline |
-| **CLI** | Standalone command-line interface for offline or pre-commit use |
+| Page | What you do there |
+|---|---|
+| **Overview** | See open credentials (deduplicated and net of triage) by severity, history-only exposure, overdue waivers, and the projects that need attention first. |
+| **Projects** | Every scanned repository, sorted by open critical, then open high, then any open. |
+| **Credential ledger** | A per-project inventory with *Needs action / Accepted / Rotated / False positive / All* tabs, severity and exposure filters, an open-credentials trend, locations, risk factors, remediation steps, rotation links, and the triage form. |
+| **Scans** | Every scan, with a credential-level diff against the previous scan, findings grouped by file, and JSON / CSV / SARIF / remediation-patch exports. |
+| **Schedules** | Cron rescans (UTC), with alerting when SMTP is configured. |
+
+Data views have loading, empty, and error states. Controls are keyboard-reachable with visible focus, severity is never conveyed by color alone, and layouts were checked at a 375 px phone width.
 
 ---
 
-## Screenshots
+## Prerequisites
 
-> The live dashboard at [https://automated-secrets-scanner.vercel.app](https://automated-secrets-scanner.vercel.app) shows a seeded demo with 7 realistic scans across 6 acme-corp repositories.
-
-| Dashboard | Scan Detail |
-|-----------|-------------|
-| KPI cards · severity chart · findings trend · top types | Per-file findings grouped with severity badges and remediation steps |
+- **Python 3.11+** (CI uses 3.11; also tested locally on 3.14) and the **`git`** binary for history scans
+- **Node.js 20+** for the console (React Router 7 and Vite 6 require it)
+- Optional: **Docker** for the Compose stack, and **PostgreSQL** (local or a free Neon database)
 
 ---
 
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| **Backend** | Python 3.11, FastAPI, SQLAlchemy 2.0 (async), Pydantic v2, Uvicorn |
-| **Database** | SQLite (dev / Render free tier) · PostgreSQL (production) |
-| **Scanner** | Custom regex engine (26 patterns), Shannon entropy, GitPython |
-| **Scheduler** | APScheduler 3.x (`AsyncIOScheduler`) |
-| **Email** | aiosmtplib (async SMTP) |
-| **Frontend** | React 18, TypeScript 5, Vite, Tailwind CSS 3 (custom token system), Instrument Sans / IBM Plex Mono |
-| **Charts** | Hand-built SVG: severity spectrum bar, stepped trend line with crosshair tooltip, ranked magnitude bars — zero chart-library weight |
-| **Data fetching** | TanStack Query v5 (auto-refetch every 15 s) |
-| **Real-time** | Native WebSocket (browser + FastAPI) |
-| **Deploy** | Render (backend) + Vercel (frontend) — both free tier |
-
----
-
-## Quick Start (Local Development)
-
-### Prerequisites
-
-- Python 3.11+
-- Node.js 20+
-
-### 1. Backend
+## Quick start
 
 ```bash
+# Backend
 cd backend
-python -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env              # edit if needed (defaults work out of the box)
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env            # defaults work as-is (public mode, SQLite)
+python seed_demo.py             # optional: sample projects with fake credentials and triage
+uvicorn app.main:app --reload   # http://localhost:8000  (Swagger UI at /docs)
 
-# Seed demo data (optional)
-python seed_demo.py
-
-# Start the API server
-uvicorn app.main:app --reload
-```
-
-Backend: **http://localhost:8000** — Swagger UI at [/docs](http://localhost:8000/docs)
-
-### 2. Frontend
-
-```bash
+# Console (another terminal)
 cd frontend
 npm install
-npm run dev
+npm run dev                     # http://localhost:5173 (proxies /api and /health to :8000)
 ```
 
-Dashboard: **http://localhost:5173**
+`seed_demo.py` writes nothing if the database already contains any scan or if `ACCESS_TOKEN` is set, so it can't mix sample data into a real workspace.
 
-The Vite dev server proxies `/api` → `http://localhost:8000`, so no CORS setup is needed locally.
-
-### 3. Docker Compose (full stack)
+**Docker Compose** (PostgreSQL 16 + API + nginx-served console on http://localhost:5173):
 
 ```bash
 docker compose up --build
-# Backend:  http://localhost:8000
-# Frontend: http://localhost:5173
 ```
 
 ---
 
-## CLI Usage
+## CI: fail on new leaks only
 
-The original standalone CLI is still fully functional for offline scanning:
+### GitHub Action
+
+```yaml
+# .github/workflows/secrets.yml
+name: Secrets
+on: [push, pull_request]
+jobs:
+  cipherwatch:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, security-events: write }
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }          # needed for history: "true"
+      - uses: Udit013/automated-secrets-scanner@main
+        id: scan
+        with:
+          fail-on: high                   # critical | high | medium | low | none
+          history: "true"
+          baseline: .cipherwatch-baseline.json   # skipped if the file doesn't exist
+      - if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with: { sarif_file: "${{ steps.scan.outputs.sarif-file }}" }
+```
+
+The action scans once, printing a masked summary to the log, writing the SARIF report, and setting the exit code. It installs GitPython into a private virtualenv using its own Python (`update-environment: false`), so it doesn't change the Python version the rest of your job uses. Linux and macOS runners are supported; Windows runners aren't. Inputs reach the shell only through environment variables, never through `${{ }}` interpolation inside the script. This repository gates itself the same way: see the `self-scan` job in [ci.yml](.github/workflows/ci.yml) and its fixture baseline in [.cipherwatch-baseline.json](.cipherwatch-baseline.json).
+
+### CLI
+
+Needs Python 3.11+, GitPython, and `git` for `--history`. No server or database.
 
 ```bash
-pip install -r requirements.txt     # root-level (GitPython + pytest)
+pip install "GitPython>=3.1.40"
 
-# Scan a directory
-python cli.py -d /path/to/project
-
-# Scan a single file
-python cli.py -f config.py
-
-# Scan git history
-python cli.py -g /path/to/repo --max-commits 200
-
-# Scan a raw string
-python cli.py -s 'API_KEY="sk_live_abc123"'
-
-# Export results to JSON
-python cli.py -d . -o report.json --format json
-
-# Print statistics
-python cli.py -d . --stats
+python cli.py baseline .                      # accept what is there today (writes .cipherwatch-baseline.json)
+python cli.py scan . --history --fail-on high --baseline .cipherwatch-baseline.json
+python cli.py scan . --sarif cipherwatch.sarif   # text summary + SARIF file in one run
+python cli.py scan . --format json            # one entry per credential
 ```
+
+Exit codes: `0` nothing new at or above `--fail-on`, `1` new credentials at or above it, `2` usage or I/O error. Pre-3.0 flags still work (`-d DIR` and `-f FILE` map to `scan PATH`; `-g REPO` maps to `scan REPO --history`).
+
+**Baselines** store `fingerprint`, `secret_type`, and `file_path` per credential, never secret values. Each baseline records a `key_id` derived from the fingerprint key; scanning with a different key exits `2` instead of reporting every known credential as new.
+
+**Matching the console's fingerprints.** The CLI uses a fixed public key unless `FINGERPRINT_KEY` is set. CLI and console fingerprints match only when both use the same `FINGERPRINT_KEY` environment variable; a key the server generated for itself is stored in its database and isn't shared with the CLI.
+
+---
+
+## Detection engine
+
+- **26 patterns**: AWS (access key, secret key), Google (API key, service account), GitHub (PAT, OAuth, App tokens), Stripe (live, test), Slack (bot, app), Twilio, SendGrid, Mailgun, Discord, JWT, private keys (RSA/EC/DSA/OpenSSH/PGP), database connection strings, Azure storage key and SAS token, npm and PyPI tokens, plus generic API key, secret, and password.
+- **Entropy gating**: the generic, shape-less patterns must clear a Shannon-entropy floor (default 3.5 bits, configurable per scan).
+- **False-positive controls**: placeholder detection (`YOUR_KEY_HERE`, `${VAR}`, `example`, `changeme`, …), severity downgrade for test paths, and comment skipping (except key headers).
+- **File selection**: source and config extensions plus extensionless credential files (`id_rsa`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `Dockerfile`, …). Vendored and virtualenv directories, symlinks, and files over 5 MB are skipped, in both the working tree and history.
+- **Fingerprints**: HMAC-SHA256 of the value for format-specific patterns. Generic patterns and key-header markers, whose match isn't a stable secret value, are fingerprinted by pattern + file + masked match instead.
+- **Risk score**: 0–100 from severity, git-history presence, occurrences, exposure duration, author count, and entropy, with a stated reason for every point.
+
+---
+
+## Security model
+
+| Control | Detail |
+|---|---|
+| **Two modes** | `ACCESS_TOKEN` unset: public demo mode, protected by abuse limits. Set: every `/api/v1` request needs `Authorization: Bearer <token>`, compared in constant time; failures get `401`. The console asks for the token once per browser session (optionally remembered on the device). The WebSocket sends it as a `Sec-WebSocket-Protocol` entry, so it never appears in URLs or access logs. `/health` is always public. |
+| **Abuse limits** | Per-client-IP sliding window on scan creation (default 10 per 10 minutes; `429` with `Retry-After`), a soft cap of 3 queued/running scans, and a cap of 25 schedules. The client IP is read from `X-Forwarded-For` only `TRUSTED_PROXY_HOPS` entries from the right, so a client can't spoof it by prepending addresses. |
+| **Untrusted repositories** | Archives stream to disk under a 100 MB cap. Zip-slip, uncompressed-size (500 MB), and member-count (50,000) checks run before extraction. Symlinks aren't followed, files over 5 MB aren't read, scanning runs in worker threads, and the Docker image runs as a non-root user. |
+| **No secret retention** | Only masked values and masked lines are stored; pasted text is never stored. Tests assert that no raw secret appears in any API response, export, or CLI baseline. |
+| **Data isolation** | Triage state is keyed by (project, fingerprint). A fingerprint that isn't in the project's findings is rejected with `404`; path segments and fingerprints are validated by pattern. |
+| **CORS** | Explicit origins, no credentialed requests, explicit methods and headers. |
+
+A private workspace is single-tenant: everyone holding the token sees the same projects, and there are no per-user accounts (see [Limitations](#limitations)).
+
+---
+
+## Zero-cost deployment
+
+| Piece | Free option | Notes |
+|---|---|---|
+| API | Render free web service via [`render.yaml`](render.yaml) | Sleeps after about 15 minutes idle; the console shows a "waking the server" state on the first request. |
+| Database | SQLite on the instance (demo; reset on every redeploy) **or** a free Neon Postgres | To keep triage history, set `DATABASE_URL=postgresql+asyncpg://…`. |
+| Console | Vercel free tier | Root directory `frontend`; set `VITE_API_URL=https://<your-api>.onrender.com` at build time. |
+| CI | GitHub Actions | The composite action needs only GitPython. |
+| Alerts | Any SMTP account (e.g. a Gmail app password) | Optional. |
+
+**Private workspace on Render:** set `ACCESS_TOKEN` (long random), `FINGERPRINT_KEY` (long random, then keep it stable; changing it re-keys every credential), `SEED_DEMO=0`, a Neon `DATABASE_URL`, and `CORS_ORIGINS` for your console's origin. `render.yaml` sets `TRUSTED_PROXY_HOPS=1`, which assumes Render's proxy appends exactly one `X-Forwarded-For` entry. That assumption hasn't been verified against a live deployment; confirm it after deploying (see [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md#troubleshooting)).
+
+---
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | `sqlite+aiosqlite:///./secrets_scanner.db` | SQLite or `postgresql+asyncpg://…` |
+| `ACCESS_TOKEN` | — | Set to make the workspace private |
+| `FINGERPRINT_KEY` | generated and stored in the DB | HMAC key for fingerprints; also read by the CLI |
+| `SCAN_RATE_LIMIT` / `SCAN_RATE_WINDOW_SECONDS` | `10` / `600` | Scan creations per client IP per window |
+| `MAX_CONCURRENT_SCANS` | `3` | Queued + running scans (soft cap) |
+| `MAX_SCHEDULES` | `25` | Stored schedules |
+| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the API |
+| `CORS_ORIGINS` | localhost dev origins | Comma-separated console origins |
+| `GITHUB_TOKEN` | — | Raises the GitHub API limit from 60 to 5,000 requests/hour |
+| `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASSWORD` `SMTP_FROM` `ALERT_EMAIL` | — | Email alerts (optional) |
+| `BACKEND_URL` | `http://localhost:8000` | Links in alert emails |
+| `SEED_DEMO` | `1` in `render.yaml` | Run the demo seeder on start (Render start command only) |
+| `VITE_API_URL` | — (console build) | API origin for a separately hosted console |
+
+See [backend/.env.example](backend/.env.example) for annotated defaults.
 
 ---
 
 ## REST API
 
-All endpoints are documented interactively at `/docs`.
+Interactive docs are served at `/docs`. In private mode every `/api/v1` route requires the bearer token.
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/v1/scans` | Start a new scan (async background task) |
-| `GET` | `/api/v1/scans` | List all scans (paginated) |
-| `GET` | `/api/v1/scans/{id}` | Get scan details with all findings |
-| `GET` | `/api/v1/scans/{id}/findings` | Findings — filterable by severity / type |
-| `DELETE` | `/api/v1/scans/{id}` | Delete scan and its findings |
-| `WS` | `/api/v1/scans/ws/{id}` | WebSocket — real-time scan progress |
-| `GET` | `/api/v1/scans/{id}/diff` | Differential comparison vs. previous scan of the same source |
-| `GET` | `/api/v1/export/{id}/json` | Download JSON report |
-| `GET` | `/api/v1/export/{id}/csv` | Download CSV report |
-| `GET` | `/api/v1/export/{id}/sarif` | Download SARIF 2.1.0 report |
-| `GET` | `/api/v1/export/{id}/remediation` | Structured remediation report (JSON) |
-| `GET` | `/api/v1/export/{id}/patch` | Download remediation patch (env-var replacements) |
-| `GET` | `/api/v1/stats` | Dashboard statistics |
-| `POST` | `/api/v1/schedules` | Create a recurring scheduled scan |
-| `GET` | `/api/v1/schedules` | List all schedules |
-| `PATCH` | `/api/v1/schedules/{id}/toggle` | Enable or disable a schedule |
-| `DELETE` | `/api/v1/schedules/{id}` | Delete a schedule |
-| `GET` | `/health` | Health check (used to wake Render free tier) |
+|---|---|---|
+| `POST` | `/api/v1/scans` | Start a scan (`github` or `paste`); rate- and concurrency-limited |
+| `GET` | `/api/v1/scans` · `/scans/{id}` · `/scans/{id}/findings` | Scans and line-level findings |
+| `GET` | `/api/v1/scans/{id}/diff` | Credential-level diff against the previous completed scan of the source |
+| `DELETE` | `/api/v1/scans/{id}` | Delete a scan |
+| `WS` | `/api/v1/scans/ws/{id}` | Live progress (subprotocols `cipherwatch.v1`, `bearer.<token>`) |
+| `GET` | `/api/v1/projects` | Projects with credential summaries |
+| `GET` | `/api/v1/projects/{owner}/{repo}` | Project overview + open-credentials trend |
+| `GET` | `/api/v1/projects/{owner}/{repo}/credentials` | The ledger; filter by `status`, `severity`, `exposure` |
+| `PUT` | `/api/v1/projects/{owner}/{repo}/credentials/{fingerprint}` | Record a decision `{status, note, review_by}` |
+| `GET` | `/api/v1/export/{id}/{json,csv,sarif,patch,remediation}` | Exports |
+| `GET` | `/api/v1/stats` | Raw totals plus deduplicated exposure |
+| `GET/POST/PATCH/DELETE` | `/api/v1/schedules…` | Cron schedules (UTC) |
+| `GET` | `/health` | `{status, version, auth_required, demo}` |
 
-### Example: Start a GitHub scan
+---
+
+## Tests and checks
 
 ```bash
-curl -X POST https://secrets-scanner-api.onrender.com/api/v1/scans \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_type": "github",
-    "source_ref": "https://github.com/owner/repo",
-    "scan_git_history": false
-  }'
+cd backend && pytest tests/ -q          # 130 tests (SQLite)
+TEST_DATABASE_URL=postgresql+asyncpg://user@host/cipherwatch_test pytest tests/ -q   # same suite on Postgres
+cd .. && pytest test_scanner.py -q      # 19 tests for the legacy scanner module
+cd frontend && npm run lint && npm run typecheck && npm run build
 ```
 
-### CI/CD Integration
+The suite drops every table in the database it uses, so it refuses a `TEST_DATABASE_URL` whose database name doesn't contain `test`.
 
-**GitHub Actions:**
-
-```yaml
-name: Secrets Scan
-on: [push, pull_request]
-
-jobs:
-  scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - run: python cli.py -d . -o secrets.json --format json --stats
-      - uses: actions/upload-artifact@v4
-        with:
-          name: secrets-report
-          path: secrets.json
-```
-
-**Pre-commit hook:**
-
-```bash
-#!/bin/bash
-# .git/hooks/pre-commit
-python /path/to/cli.py -d . --min-entropy 4.0
-if [ $? -ne 0 ]; then
-  echo "Secrets detected — commit blocked."
-  exit 1
-fi
-```
+Coverage highlights: fingerprint stability across checkouts, file moves, and legacy rows; triage persistence, waiver bounds and expiry; credential-level trend, diff, and alert suppression; the access token on every router and on the WebSocket handshake; spoof-resistant client IPs; rate, concurrency, and schedule limits; additive schema upgrades, including legacy data too long to index; demo-seeding safeguards; CLI exit codes, baselines (no secrets, key binding), and SARIF; size and vendored-directory limits; and the earlier hardening regressions (no raw secret in any response or export, zip-slip/zip-bomb limits, restart-safe schedules).
 
 ---
 
-## Detection Engine
+## Performance
 
-### Pattern Matching (26 types)
-
-| Category | Secret Types |
-|----------|-------------|
-| AWS | Access Key (`AKIA…`), Secret Access Key |
-| GCP | API Key (`AIza…`), Service Account JSON |
-| GitHub | Personal Access Token, OAuth Token, App Token |
-| Stripe | Live key (`sk_live_…`), Test key |
-| Communication | Slack Bot/App Token, Twilio, SendGrid, Mailgun, Discord Bot Token |
-| Authentication | JWT token, Private SSH / RSA / EC / OpenSSH / PGP key |
-| Database | PostgreSQL, MySQL, MongoDB, Redis, MSSQL connection strings |
-| Cloud | Azure Storage Key, Azure SAS Token |
-| Package registries | npm auth token, PyPI token |
-| Generic | High-entropy API keys, secrets, hardcoded passwords |
-
-### Entropy Analysis
-
-Shannon entropy $H = -\sum p_i \log_2 p_i$ flags high-entropy strings that look like secrets even when variable names are non-descriptive. Default threshold: **3.5 bits** (configurable per request via `min_entropy`).
-
-### False-Positive Controls
-
-- **Test-file downgrading** — findings in `tests/`, `*.test.*`, `spec/`, or `fixtures/` are automatically demoted one severity level
-- **Comment skipping** — lines starting with `#`, `//`, `*`, `<!--` are skipped (with an exception for SSH key headers `-----BEGIN`)
-- **Placeholder detection** — 14 regex patterns + a unique-character-ratio check eliminate `YOUR_KEY_HERE`, `${API_KEY}`, `example_…`, `xxx…`, single-lowercase-word values
-
----
-
-## Severity Scoring
-
-| Severity | Examples | Recommended Action |
-|----------|----------|--------------------|
-| **CRITICAL** | SSH/PGP private keys, Stripe live keys, DB connection strings, GCP service account JSON | Revoke immediately |
-| **HIGH** | GitHub PATs, Google API keys, AWS access keys, JWT tokens, Slack tokens | Rotate within 24 h |
-| **MEDIUM** | Stripe test keys, lower-entropy generic keys, Twilio keys | Review and rotate |
-| **LOW** | Suspected secrets in test files or with entropy just above threshold | Investigate |
-
----
-
-## Project Structure
-
-```
-automated-secrets-scanner/
-├── backend/
-│   ├── app/
-│   │   ├── main.py                  # FastAPI app + lifespan (DB init + scheduler)
-│   │   ├── config.py                # Pydantic settings (env vars)
-│   │   ├── database.py              # SQLAlchemy async engine + session factory
-│   │   ├── models.py                # ORM: Scan, Finding, ScanSchedule
-│   │   ├── schemas.py               # Pydantic request/response schemas
-│   │   ├── notifications.py         # Async SMTP email alerts
-│   │   ├── scanner/
-│   │   │   ├── patterns.py          # 26 SecretPattern definitions with remediation
-│   │   │   ├── core.py              # Scan engine (regex + entropy + heuristics + lifecycle)
-│   │   │   ├── risk.py              # Transparent 0-100 exposure risk score
-│   │   │   ├── sarif.py             # SARIF 2.1.0 report builder
-│   │   │   ├── remediation.py       # Env-var patch + .env.example generator
-│   │   │   └── github_scanner.py    # GitHub API zipball download + extraction
-│   │   ├── routers/
-│   │   │   ├── scans.py             # Scan CRUD + WebSocket endpoint
-│   │   │   ├── export.py            # JSON / CSV export
-│   │   │   ├── schedules.py         # Schedule CRUD
-│   │   │   └── stats.py             # Dashboard aggregation queries
-│   │   └── workers/
-│   │       └── scheduler.py         # APScheduler AsyncIOScheduler wrapper
-│   ├── seed_demo.py                 # Populate DB with realistic demo data
-│   ├── requirements.txt
-│   └── .env.example
-├── frontend/
-│   ├── src/
-│   │   ├── api/client.ts            # Axios client + all TypeScript types
-│   │   ├── hooks/useWebSocket.ts    # WebSocket hook (dev + prod URL resolution)
-│   │   ├── components/
-│   │   │   ├── Layout.tsx           # Sidebar + Outlet wrapper
-│   │   │   ├── Navbar.tsx           # Top navigation
-│   │   │   ├── SeverityBadge.tsx    # CRITICAL / HIGH / MEDIUM / LOW chip
-│   │   │   └── StatusBadge.tsx      # queued / running / completed / failed chip
-│   │   └── pages/
-│   │       ├── Dashboard.tsx        # Stat strip + custom SVG charts
-│   │       ├── NewScan.tsx          # Scan form + live WebSocket progress bar
-│   │       ├── ScanHistory.tsx      # Searchable scan list with status filters
-│   │       ├── ScanDetail.tsx       # Findings grouped by file with remediation
-│   │       └── Schedules.tsx        # Cron schedule management UI
-│   ├── vercel.json                  # SPA rewrites
-│   ├── vite.config.ts
-│   └── package.json
-├── scanner_core.py                  # Standalone scanner (no FastAPI dependency)
-├── cli.py                           # Command-line interface
-├── test_scanner.py                  # Unit tests (19 cases)
-├── docker-compose.yml               # Full-stack local dev with PostgreSQL
-└── render.yaml                      # Render deployment config
-```
-
----
-
-## Deployment
-
-### Backend → Render (free tier)
-
-The `render.yaml` at the repo root fully automates this:
-
-1. Push to GitHub
-2. Create a **New Web Service** in [Render](https://render.com) → connect your repo → Render auto-detects `render.yaml`
-3. Set `GITHUB_TOKEN` in the Render environment (optional — raises GitHub API rate limit from 60 → 5000 req/hr)
-4. Deploy
-
-The start command seeds demo data then starts Uvicorn:
-```
-python seed_demo.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT
-```
-
-> **Note:** Render's free tier sleeps after 15 minutes of inactivity. The frontend automatically pings `/health` on page load to wake it before the user interacts.
-
-### Frontend → Vercel (free tier)
-
-1. Import the repo in [Vercel](https://vercel.com)
-2. Set **Root Directory** to `frontend`
-3. Add environment variable: `VITE_API_URL=https://your-render-service.onrender.com`
-4. Deploy
-
-`vercel.json` handles SPA routing (all paths rewrite to `index.html`).
-
----
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DATABASE_URL` | Yes | `sqlite+aiosqlite:///./secrets_scanner.db` | SQLite or `postgresql+asyncpg://...` |
-| `CORS_ORIGINS` | Yes | — | Comma-separated list of allowed frontend origins |
-| `GITHUB_TOKEN` | No | — | GitHub PAT — raises API rate limit to 5,000 req/hr |
-| `SMTP_HOST` | No | `smtp.gmail.com` | SMTP server for email alerts |
-| `SMTP_PORT` | No | `587` | SMTP port |
-| `SMTP_USER` | No | — | SMTP username / Gmail address |
-| `SMTP_PASSWORD` | No | — | SMTP password or Gmail App Password |
-| `ALERT_EMAIL` | No | — | Recipient address for CRITICAL finding alerts |
-| `MIN_ENTROPY` | No | `3.5` | Global entropy threshold (overridden per request) |
-
----
-
-## Running Tests
-
-**95 tests** across two suites, run automatically in CI on every push.
-
-```bash
-# Backend suite (76 tests): API integration, unit, and hardening regressions
-cd backend
-pip install -r requirements-dev.txt
-pytest tests/ -v
-
-# CLI scanner suite (19 tests)
-pip install -r requirements.txt      # repo root
-pytest test_scanner.py -v
-```
-
-Coverage includes:
-- **API integration** — full paste-scan lifecycle over a real (throwaway) database: scan → findings → severity filters → diff → JSON/CSV/SARIF/patch exports → stats → delete
-- **Input validation** — GitHub URL allow-listing, paste size limits (512 KB), cron syntax and field values, a 15-minute minimum schedule interval, pagination clamps, out-of-range parameter rejection
-- **Hardening regressions** — no raw secret in any API response or export, pasted content never persisted, interrupted scans failed and schedules restored at startup, zip-bomb and member-count limits, escaped alert email (each verified to fail against the pre-fix code)
-- **Risk scoring** — severity bases, git-history/occurrence/exposure/author/entropy bonuses, 100-point cap, reason strings for every point awarded
-- **SARIF** — schema/version, rule deduplication, severity→level mapping, locations, fingerprints
-- **Remediation** — env-var derivation, per-language replacements (Python/Node/Go/Ruby/PHP/.env), patch hunk grouping
-- **Detection engine** — AWS / GitHub / Stripe / JWT / SSH keys, placeholder suppression, entropy gating, test-file downgrading
-
----
-
-## Performance Benchmarks
-
-Measured on a laptop (single-threaded Python 3.14), not a server. Re-run before quoting them for other hardware.
+Measured on a laptop with v2.1 of the engine; re-run before quoting.
 
 | Metric | Value | How it was measured |
-|--------|-------|--------------------|
-| Secret types covered | 26 | 8 CRITICAL · 17 HIGH · 1 MEDIUM patterns in `patterns.py` |
-| Detection throughput | ~96K lines/sec (~630 files/sec) | `scan_text` over this repo's own 12.4K-line source, median of 7 runs |
-| GitHub repo scan, end to end | ~1.3 s | `pallets/flask`, 101 files, download + extract + scan |
-| Git-history de-duplication | 1,351 matches → 82 findings | This repo's 14-commit history |
-| Max event-loop stall during a scan | ~25–30 ms | Down from 458 ms (current tree) and 21 s (with history) before scanning moved to worker threads |
+|---|---|---|
+| Detection throughput | ~96K lines/sec | `scan_text` over this repo's source, median of 7 runs |
+| GitHub repo scan, end to end | ~1.3 s | `pallets/flask`: download + extract + scan |
+| Git-history de-duplication | 1,351 matches → 82 findings | This repo's 14-commit history at the time |
+| Max event-loop stall during a scan | ~25–30 ms | After scanning moved to worker threads (was 458 ms / 21 s) |
 
-**On accuracy:** this repo has no labeled evaluation set large enough to support precision/recall figures. `evaluate_performance.py` exercises only 13 labeled secrets, so it is a smoke test rather than a benchmark.
+There is no labelled evaluation set large enough for precision/recall figures; `evaluate_performance.py` checks 13 labelled secrets and is a smoke test, not a benchmark.
+
+---
+
+## Limitations
+
+- **Single tenant.** One access token per deployment; no user accounts, roles, or per-user record of who made each decision.
+- **GitHub only, public by default.** Private repositories can be downloaded with a `GITHUB_TOKEN` that has repo access, but history scans clone without the token, so they fail for private repos (the scan still completes with current-code results). This path hasn't been tested.
+- **History depth.** History scans clone with `--depth=max_commits` (default 100); older commits aren't seen.
+- **Project names are case-sensitive.** `github.com/Acme/API` and `github.com/acme/api` become two projects.
+- **Additive migrations only.** Startup adds missing columns and indexes; anything destructive would need a migration tool such as Alembic. Legacy rows from before 2.1 (paste content stored in `source_ref`) are left as they are.
+- **In-process limits.** Rate limits reset on restart and aren't shared across instances; the concurrency cap is checked before insert, so a simultaneous burst can briefly exceed it.
+- **Render proxy assumption.** `TRUSTED_PROXY_HOPS=1` hasn't been verified on a live Render deployment.
+- **Build-tool advisories.** `npm audit` reports 7 advisories in Tailwind CSS 3's build-time dependencies; `npm audit --omit=dev` (what ships to browsers) is clean. Clearing them needs a Tailwind 4 migration.
 
 ---
 
 ## Author
 
-**Udit Agarwal**  
-MS Computer Science — Indiana University Bloomington  
+**Udit Agarwal**
+MS Computer Science — Indiana University Bloomington
 [github.com/Udit013](https://github.com/Udit013) · agarwaludit13@gmail.com

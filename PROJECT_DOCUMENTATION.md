@@ -1,1250 +1,784 @@
-# CipherWatch — Complete Project Documentation
+# CipherWatch — Technical Handbook
 
-> A single source of truth for understanding this repository from zero prior knowledge to implementation-level depth. Written for interview preparation, onboarding, and recruiter/hiring-manager review.
+> The reference for how CipherWatch 3.0 works, why it is built the way it is, how to run and deploy it, and where its edges are. Written for onboarding, code review, and interview preparation.
 
-**Live app:** https://cipherwatch-web.vercel.app
-**API:** https://secrets-scanner-api.onrender.com (docs at `/docs`)
 **Repo:** https://github.com/Udit013/automated-secrets-scanner
+**Hosted demo:** https://cipherwatch-web.vercel.app (API: https://secrets-scanner-api.onrender.com/docs). Both deploy from `main`; `/health` on the API reports the running version.
 
-Every claim in this document was verified against the actual source in this repository at documentation time — not assumed, not aspirational. Where a behavior is conditional (e.g. opt-in), that condition is stated explicitly.
-
----
-
-## Table of Contents
-
-1. [The Problem, In Plain Language](#1-the-problem-in-plain-language)
-2. [Who This Is Built For](#2-who-this-is-built-for)
-3. [High-Level Architecture](#3-high-level-architecture)
-4. [Folder Structure](#4-folder-structure)
-5. [The Complete Request Lifecycle](#5-the-complete-request-lifecycle)
-6. [Data Model & Database](#6-data-model--database)
-7. [The Detection Engine (Core Domain Logic)](#7-the-detection-engine-core-domain-logic)
-8. [Backend: File-by-File Walkthrough](#8-backend-file-by-file-walkthrough)
-9. [REST API Reference](#9-rest-api-reference)
-10. [WebSocket: Real-Time Progress](#10-websocket-real-time-progress)
-11. [Background Jobs: Scheduling & Email Alerts](#11-background-jobs-scheduling--email-alerts)
-12. [Frontend: File-by-File Walkthrough](#12-frontend-file-by-file-walkthrough)
-13. [Every React Component Explained](#13-every-react-component-explained)
-14. [State Management & Data Fetching](#14-state-management--data-fetching)
-15. [The Design System](#15-the-design-system)
-16. [Every Dependency, Explained](#16-every-dependency-explained)
-17. [Configuration Files Explained](#17-configuration-files-explained)
-18. [Deployment Architecture](#18-deployment-architecture)
-19. [Testing Strategy](#19-testing-strategy)
-20. [Concept Deep-Dives](#20-concept-deep-dives)
-21. [Full Feature Traces (User Action → Screen)](#21-full-feature-traces-user-action--screen)
-22. [Design Decisions & Trade-offs](#22-design-decisions--trade-offs)
-23. [Known Limitations](#23-known-limitations)
-24. [Interview Question Bank](#24-interview-question-bank)
-25. [Glossary](#25-glossary)
-26. [Complete Walkthrough: Opening the App](#26-complete-walkthrough-opening-the-app)
+Claims in this handbook were checked against the source. Where something has **not** been verified (for example, behaviour that only shows up on a live Render deployment), it is labelled as such. [§18](#18-testing-and-verification) lists exactly what was run and what was not.
 
 ---
 
-## 1. The Problem, In Plain Language
+## Table of contents
 
-**Analogy first.** Imagine a company mails out hundreds of letters every day, and occasionally, by accident, someone seals a spare house key inside an envelope along with the letter. Anyone who opens that letter now has a working key to the building. Most of the time nobody notices until something goes wrong.
-
-That is exactly what happens in software. Developers write code that needs secret values — a password to connect to a database, a key to bill a customer's credit card via Stripe, a token to post messages to Slack. To get something working quickly, it's common to type that secret value directly into the source code:
-
-```python
-stripe_key = "sk_live_51H8x9K2eZvKYlo2C..."
-```
-
-Then that file gets committed to Git and pushed to GitHub. If the repository is public — or later becomes public, or a former employee still has old clones — that secret is now exposed to anyone who can read the code. Attackers run automated scanners against GitHub 24/7 looking for exactly this pattern, and a leaked cloud credential can be found and abused within **minutes** of being pushed.
-
-**CipherWatch is a DevSecOps (Development + Security + Operations) tool that automatically finds these accidentally-committed secrets** before or after they've been pushed to a shared repository, tells you exactly how severe each one is, and tells you how to fix it.
-
-It solves three specific problems:
-
-1. **Detection** — scanning code (and, optionally, the entire commit history of a Git repository) for patterns that look like real credentials, using a combination of exact pattern matching and statistical randomness analysis.
-2. **Triage** — not every finding is equally dangerous. A live Stripe secret key in production code is a five-alarm fire; a test API key in a `tests/` folder is not. CipherWatch computes a transparent 0–100 **exposure risk score** and shows its reasoning.
-3. **Remediation** — once something dangerous is found, CipherWatch generates the concrete fix (an environment-variable replacement, a `.env.example` snippet, a downloadable patch) so an engineer can act immediately instead of researching what to do.
-
----
-
-## 2. Who This Is Built For
-
-- **A solo developer or small team** who wants to catch a leaked secret before merging a pull request, without paying for an enterprise security platform.
-- **A security-conscious engineer auditing an existing codebase** who wants to know not just *whether* a secret leaked, but *when* it was introduced, *how many commits* it has been sitting in, and *how many people* have had access to it.
-- **A DevOps/platform team** that wants a recurring, unattended scan of critical repositories with automatic email alerts when something CRITICAL appears — the same category of tool as commercial products like GitGuardian or TruffleHog, built from scratch to understand the full problem space.
+1. [What CipherWatch is](#1-what-cipherwatch-is)
+2. [Architecture](#2-architecture)
+3. [Repository layout](#3-repository-layout)
+4. [Data model and migrations](#4-data-model-and-migrations)
+5. [The detection engine](#5-the-detection-engine)
+6. [The credential ledger](#6-the-credential-ledger)
+7. [REST API reference](#7-rest-api-reference)
+8. [Authentication and private mode](#8-authentication-and-private-mode)
+9. [Abuse limits](#9-abuse-limits)
+10. [Real-time progress (WebSocket)](#10-real-time-progress-websocket)
+11. [Background work: scans, schedules, alerts](#11-background-work-scans-schedules-alerts)
+12. [The CLI](#12-the-cli)
+13. [The GitHub Action and CI](#13-the-github-action-and-ci)
+14. [The console (frontend)](#14-the-console-frontend)
+15. [Configuration reference](#15-configuration-reference)
+16. [Deployment](#16-deployment)
+17. [Security model](#17-security-model)
+18. [Testing and verification](#18-testing-and-verification)
+19. [Troubleshooting](#troubleshooting)
+20. [Design decisions and trade-offs](#20-design-decisions-and-trade-offs)
+21. [Known limitations](#21-known-limitations)
+22. [Interview question bank](#22-interview-question-bank)
+23. [Glossary](#23-glossary)
 
 ---
 
-## 3. High-Level Architecture
+## 1. What CipherWatch is
 
-CipherWatch is a classic three-tier web application: a **React single-page app** (the client), a **FastAPI backend** (the server, exposing a REST API + one WebSocket endpoint), and a **relational database** (SQLite in the current free-tier deployment, PostgreSQL-ready). There is no separate microservice layer — the scanning engine, the risk-scoring engine, the SARIF exporter, and the remediation generator are all Python modules that live *inside* the same FastAPI process and are called as plain function calls, not over the network.
+### 1.1 The problem
+
+Developers sometimes paste a credential straight into code, such as `stripe_key = "sk_live_…"`, and commit it. Once pushed, anyone with read access to the repository, or any clone of it, has that credential, and deleting the line later doesn't remove it from git history. Automated scrapers search public GitHub for exactly this.
+
+Detection alone doesn't close the loop. GitGuardian's [State of Secrets Sprawl 2025](https://blog.gitguardian.com/the-state-of-secrets-sprawl-2025/) reports that **70% of secrets leaked in 2022 were still valid**: the leaks were found but never rotated. A line-level scanner report also can't answer the questions that matter afterwards: *which credentials* are exposed (one key copied into five files is one problem), which have been handled, and whether the latest scan found anything *new*.
+
+### 1.2 The product
+
+CipherWatch is a **credential exposure ledger**:
+
+1. **Detect** credentials in a GitHub repository's current code and, optionally, its git history (26 patterns plus entropy analysis).
+2. **Deduplicate** every occurrence into one *credential*, identified by a keyed HMAC fingerprint that never contains the secret.
+3. **Decide** what each credential's status is: `open`, `rotated`, `false_positive`, or `accepted_risk` with a mandatory review date. Decisions persist across scans.
+4. **Gate** CI on *new* credentials only, via a CLI and a composite GitHub Action that compare against a committed baseline of fingerprints, and emit SARIF for GitHub code scanning.
+
+### 1.3 Positioning and scope
+
+Free, mature detectors already exist ([Gitleaks vs. TruffleHog](https://appsecsanta.com/gitleaks-vs-trufflehog)), and Gitleaks' [baseline workflow](https://tessl.io/registry/testland/gitleaks-scanning/files/references/baseline.md) shows that teams want "fail only on new". CipherWatch's opportunity is the **post-detection lifecycle**, not raw detection. Out of scope on purpose:
+
+- **Live key verification.** Calling a provider's API with a leaked key means using someone else's credential. CipherWatch treats every detection as live until a person decides otherwise.
+- **Cloud posture, dependency, or IaC scanning.** These are different products.
+- **AI or LLM features.** Detection is deterministic and explainable, and the zero-cost requirement rules out paid inference.
+
+### 1.4 Who it's for
+
+- A **solo developer or small team** that wants CI to block new leaks without paying for an enterprise platform.
+- An **engineer auditing an existing codebase** who needs to know what is exposed, for how long, and which items are already dealt with.
+- A **platform team** that wants unattended rescans and an email only when something new and critical appears.
+
+---
+
+## 2. Architecture
 
 ```text
-┌──────────────────────────────────────────────────────────────────┐
-│  BROWSER                                                          │
-│  React 18 SPA (Vite build) — served as static files by Vercel     │
-│  Pages: Overview / Scans / Scan Report / New Scan / Schedules     │
-└───────────────────────────┬────────────────────────────────────┬─┘
-                             │ HTTPS (axios, REST JSON)           │ WSS
-                             ▼                                    ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  FASTAPI BACKEND  (Render, uvicorn ASGI server)                   │
-│                                                                    │
-│   ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌───────────┐  │
-│   │  scans      │  │  export    │  │ schedules  │  │  stats    │  │
-│   │  router     │  │  router    │  │  router    │  │  router   │  │
-│   └──────┬─────┘  └──────┬─────┘  └──────┬─────┘  └─────┬─────┘  │
-│          │               │                │              │        │
-│          ▼               ▼                ▼              ▼        │
-│   ┌──────────────────────────────────────────────────────────┐   │
-│   │              scanner/ (pure-Python domain logic)          │   │
-│   │  core.py (regex+entropy engine) · patterns.py (26 rules)  │   │
-│   │  risk.py (0-100 scoring) · sarif.py · remediation.py      │   │
-│   │  github_scanner.py (zipball download + git clone)         │   │
-│   └──────────────────────────────────────────────────────────┘   │
-│          │                                                         │
-│          ▼                                                         │
-│   ┌────────────────┐   ┌───────────────────┐   ┌────────────────┐│
-│   │ SQLAlchemy 2.0  │   │ APScheduler        │   │ aiosmtplib     ││
-│   │ async ORM       │   │ (cron background   │   │ (email alerts) ││
-│   │                 │   │  scheduler)         │   │                ││
-│   └────────┬────────┘   └───────────────────┘   └────────────────┘│
-└────────────┼───────────────────────────────────────────────────────┘
-             ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  DATABASE — SQLite file (Render free tier) or PostgreSQL          │
-│  Tables: scans · findings · scan_schedules                        │
-└──────────────────────────────────────────────────────────────────┘
+                    ┌──────────────────────────────────────────────┐
+  CLI / Action  ───▶│ backend/app/scanner  (pure Python)           │
+  (no server)       │  patterns · entropy · placeholders · history │
+                    │  fingerprints · risk score · SARIF · patch   │
+                    └──────────────────────┬───────────────────────┘
+                                           │ same engine, imported
+┌──────────────────────────────────────────▼──────────────────────────────────┐
+│ FastAPI app (uvicorn)                                                        │
+│  routers: scans · projects · export · schedules · stats      + /health       │
+│  security.py: require_access (bearer / WS subprotocol) · rate limiter        │
+│  services/inventory.py: credentials, triage state, trend, diff, alerts       │
+│  workers/scheduler.py: APScheduler (UTC cron)   notifications.py: aiosmtplib │
+└──────────────────────────────────────────┬──────────────────────────────────┘
+                                           │ SQLAlchemy 2.0 async (aiosqlite / asyncpg)
+             SQLite (local, demo)  or  PostgreSQL (Docker Compose, Neon free tier)
+             scans · findings · credential_states · scan_schedules · app_settings
 
-              External services this system talks to:
-              ┌──────────────────┐   ┌──────────────────┐
-              │  GitHub REST API  │   │  SMTP server      │
-              │  (zipball + clone)│   │  (Gmail, etc.)     │
-              └──────────────────┘   └──────────────────┘
+React 18 SPA (Vite 6, React Router 7, TanStack Query 5, Tailwind CSS 3)
+  served by Vercel, by nginx (Docker), or by the Vite dev server (local)
+External: GitHub REST API (zipball) + git clone (history) · SMTP (optional)
 ```
 
-**No AI/LLM components exist in this project.** Detection is deterministic (regex + math), not machine-learning-based. This is a legitimate, deliberate design choice explained in [§22](#22-design-decisions--trade-offs).
-
-**No authentication exists in this project.** There is no login, no user accounts, no session management. Every visitor sees the same shared dataset. This is appropriate for a portfolio/demo deployment and is called out explicitly as a limitation in [§23](#23-known-limitations), with a note on what would need to change for multi-tenant production use.
+- **One process.** Scanning, scoring, exports, and scheduling run inside the FastAPI process. There is no queue, worker fleet, or cache service, which keeps hosting free.
+- **Framework-free core.** `backend/app/scanner/` imports nothing from FastAPI or SQLAlchemy. The CLI imports it directly and needs only GitPython; the web layer wraps it.
+- **No AI components.** Every decision the engine makes is a regex match, an entropy number, or an additive score with stated reasons.
 
 ---
 
-## 4. Folder Structure
+## 3. Repository layout
 
 ```text
 automated-secrets-scanner/
-├── backend/                     # FastAPI application (Python)
+├── action.yml                    # Composite GitHub Action (CI gate)
+├── cli.py                        # CLI entry point: translates pre-3.0 flags, calls backend/app/cli.py
+├── .cipherwatch-baseline.json    # This repo's own baseline (deliberate fixtures and demo data)
+├── .github/workflows/ci.yml      # backend · legacy-scanner · frontend · self-scan jobs
+├── docker-compose.yml            # Postgres 16 + API + nginx console
+├── render.yaml                   # Render blueprint for the API
+├── scanner_core.py, test_scanner.py   # Legacy pre-web engine and its 19 tests (unused by the product)
+├── backend/
+│   ├── Dockerfile, .dockerignore # python:3.11-slim + git, non-root user (uid 10001)
+│   ├── requirements.txt, requirements-dev.txt, pytest.ini, .env.example
+│   ├── seed_demo.py              # Sample projects with fake credentials and triage (guarded)
 │   ├── app/
-│   │   ├── main.py              # FastAPI app instance, lifespan, router mounting
-│   │   ├── config.py            # Pydantic Settings — reads env vars
-│   │   ├── database.py          # SQLAlchemy async engine + session factory
-│   │   ├── models.py            # ORM table definitions (Scan, Finding, ScanSchedule)
-│   │   ├── schemas.py           # Pydantic request/response contracts + input validation
-│   │   ├── notifications.py     # SMTP email alert sender
-│   │   ├── scanner/             # The domain logic — pure Python, no FastAPI imports
-│   │   │   ├── core.py          # Regex+entropy scan engine, git history walker
-│   │   │   ├── patterns.py      # 26 SecretPattern definitions + placeholder filter
-│   │   │   ├── risk.py          # 0-100 exposure risk scoring
-│   │   │   ├── sarif.py         # SARIF 2.1.0 report builder
-│   │   │   ├── remediation.py   # env-var suggestion + patch file generator
-│   │   │   └── github_scanner.py# Downloads a GitHub repo as a zip, orchestrates scan
-│   │   ├── routers/             # FastAPI route handlers, one file per resource
-│   │   │   ├── scans.py         # POST/GET/DELETE scans, WebSocket, diff endpoint
-│   │   │   ├── export.py        # JSON/CSV/SARIF/patch export endpoints
-│   │   │   ├── schedules.py     # CRUD for recurring scan schedules
-│   │   │   └── stats.py         # Dashboard aggregation query
-│   │   └── workers/
-│   │       └── scheduler.py     # APScheduler wrapper — cron job registration
-│   ├── tests/                   # 76 pytest tests (integration, unit, hardening regressions)
-│   ├── seed_demo.py             # Populates the DB with realistic demo data
-│   ├── requirements.txt         # Production dependencies
-│   ├── requirements-dev.txt     # + pytest, pytest-asyncio for CI
-│   └── .env.example             # Documented environment variable template
-│
-├── frontend/                    # React 18 + TypeScript SPA (Vite)
-│   ├── src/
-│   │   ├── main.tsx             # React root render + TanStack Query provider
-│   │   ├── App.tsx              # Router definition, backend wake-up ping
-│   │   ├── index.css            # Design-system tokens as Tailwind @layer rules
-│   │   ├── api/
-│   │   │   └── client.ts        # Axios instance, ALL TypeScript types, API functions
-│   │   ├── hooks/
-│   │   │   └── useWebSocket.ts  # Custom hook: opens a WS connection per scan
-│   │   ├── components/          # Reusable, cross-page UI pieces
-│   │   │   ├── TopBar.tsx       # Site header/nav (replaces a traditional sidebar)
-│   │   │   ├── Layout.tsx       # Page shell — wraps every route via <Outlet/>
-│   │   │   ├── SeverityBadge.tsx
-│   │   │   ├── StatusBadge.tsx
-│   │   │   ├── RiskBadge.tsx    # Score readout + 10-segment meter
-│   │   │   ├── DiffSummary.tsx  # New/resolved/unchanged ledger row
-│   │   │   ├── LifecycleTimeline.tsx
-│   │   │   └── charts.tsx       # Hand-built SVG charts (no chart library)
-│   │   └── pages/                # One component per route
-│   │       ├── Dashboard.tsx    # "/" — Overview
-│   │       ├── NewScan.tsx      # "/scan" — Launch a scan
-│   │       ├── ScanHistory.tsx  # "/history" — All scans, searchable
-│   │       ├── ScanDetail.tsx   # "/history/:id" — Full scan report
-│   │       └── Schedules.tsx    # "/schedules" — Recurring scans
-│   ├── package.json
-│   ├── vite.config.ts           # Build tool config, manual chunk splitting
-│   ├── tailwind.config.js       # The entire color/type/spacing token system
-│   └── tsconfig.json
-│
-├── cli.py                       # Standalone command-line scanner (argparse-based)
-├── scanner_core.py              # Legacy scanner engine used only by cli.py
-├── test_scanner.py              # 19 pytest tests for the CLI/legacy engine
-├── .github/workflows/ci.yml     # GitHub Actions: 4 CI jobs on every push
-├── render.yaml                  # Render.com deployment blueprint (backend)
-├── docker-compose.yml           # Local full-stack dev environment (Postgres variant)
-└── README.md
+│   │   ├── main.py               # App, CORS, router mounting behind require_access, /health, lifespan
+│   │   ├── config.py             # pydantic-settings: every environment variable
+│   │   ├── database.py           # Engine, sessions, init_db, additive upgrades, fingerprint key
+│   │   ├── models.py             # Scan, Finding, ScanSchedule, CredentialState, AppSetting
+│   │   ├── schemas.py            # Request/response models and input validation
+│   │   ├── security.py           # Access token, client IP, sliding-window limiter
+│   │   ├── cli.py                # `scan` and `baseline` subcommands
+│   │   ├── notifications.py      # SMTP alert (escaped HTML; never includes pasted text)
+│   │   ├── scanner/              # core.py · patterns.py · risk.py · sarif.py · remediation.py · github_scanner.py
+│   │   ├── services/inventory.py # Credential grouping, triage, trend, exposure totals, alert selection
+│   │   ├── routers/              # scans.py · projects.py · export.py · schedules.py · stats.py
+│   │   └── workers/scheduler.py  # APScheduler wrapper (UTC)
+│   └── tests/                    # 130 tests (see §18)
+└── frontend/
+    ├── Dockerfile, nginx.conf    # Static build behind nginx; proxies /api (incl. WebSocket) and /health
+    ├── vercel.json               # SPA rewrites for Vercel
+    ├── .eslintrc.cjs, vite.config.ts, tailwind.config.js, tsconfig.json
+    └── src/
+        ├── main.tsx, App.tsx, index.css
+        ├── api/client.ts         # axios client, types, API functions, parseUtc, downloads
+        ├── api/auth.ts           # Token store (sessionStorage / localStorage)
+        ├── hooks/                # useHealth, useWebSocket
+        ├── lib/                  # severity colours, risk bands, status labels
+        ├── components/           # Gate, Layout, TopBar, Mark, ui, credentials, charts, badges, DiffSummary, LifecycleTimeline
+        └── pages/                # Landing, Dashboard (Overview), Projects, ProjectDetail, NewScan, ScanHistory, ScanDetail, Schedules
 ```
 
-**Why this split exists.** The backend's `scanner/` package is deliberately framework-agnostic — none of its files import FastAPI, SQLAlchemy, or anything web-related. `core.py`, `patterns.py`, `risk.py`, `sarif.py`, and `remediation.py` operate purely on Python primitives (strings, dataclasses, lists) and can be unit-tested and even reused outside a web server (which is exactly what `cli.py` does with the older sibling engine, `scanner_core.py`). The `routers/` package is the only layer that knows about HTTP, database sessions, and JSON serialization — its job is to translate between "the outside world" (HTTP requests) and "the domain logic" (the scanner package). This is a simplified version of a **hexagonal / ports-and-adapters architecture**: business logic in the center, framework code at the edges.
+`knowledge_doc.md` at the repo root is a personal notes file that is git-ignored and not part of the product.
 
 ---
 
-## 5. The Complete Request Lifecycle
+## 4. Data model and migrations
 
-This section answers: *what actually happens, in order, when someone uses this application?* Read top to bottom — it is the master trace that every other section elaborates on.
+### 4.1 Tables
 
-**Step 0 — Cold start.** A visitor opens `https://cipherwatch-web.vercel.app`. Vercel serves a static `index.html` plus three JavaScript bundles (`index-*.js` the app shell, `react-*.js` the React/Router vendor chunk, `data-*.js` the TanStack Query/axios/date-fns vendor chunk) and one CSS file. React mounts into `<div id="root">`.
+All models live in `backend/app/models.py`, written in SQLAlchemy 2.0's typed `Mapped[...]` style. Primary keys are UUID4 strings. Timestamps are **naive UTC** (`utcnow_naive()`), the convention everywhere, because SQLite has no timezone-aware type; see §11.2 for the bug this convention caught on Postgres.
 
-**Step 1 — Wake the backend.** `App.tsx` fires a `GET /health` request the instant the app mounts (`useWakeBackend` hook, see [§12](#12-frontend-file-by-file-walkthrough)). This exists because the backend is hosted on Render's **free tier**, which spins the server down after 15 minutes of inactivity; the very first real request after a cold start would otherwise take 30–60 seconds. This ping is fired-and-forgotten (errors are swallowed) purely to start the wake-up clock before the user does anything else.
-
-**Step 2 — Route resolves, page fetches data.** `react-router-dom` matches the current URL to a page component. That page's top-level `useQuery` hook (TanStack Query) fires — for the Overview page this is `GET /api/v1/stats`.
-
-**Step 3 — HTTP request travels to FastAPI.** The request hits Render's edge, is proxied to the running `uvicorn` process, and is routed by FastAPI's ASGI router to the matching `@router.get(...)` function based on path + method.
-
-**Step 4 — Dependency injection provides a DB session.** Every route that touches the database declares `db: Annotated[AsyncSession, Depends(get_db)]`. FastAPI calls `get_db()` (an async generator in `database.py`), which opens a new SQLAlchemy `AsyncSession`, yields it into the route function, and — after the route returns — commits the transaction (or rolls it back if an exception was raised).
-
-**Step 5 — Route handler runs its logic.** For `GET /api/v1/stats` this means running five separate aggregate SQL queries (counts, group-bys) via SQLAlchemy's async query builder and assembling them into a `StatsOut` Pydantic model.
-
-**Step 6 — Response serializes and returns.** FastAPI validates the outgoing data against the route's declared `response_model`, serializes it to JSON, and sends it back over HTTPS with the CORS headers `CORSMiddleware` attaches (this is what lets the browser, on a different origin, read the response at all — see [§20](#20-concept-deep-dives) for exactly why this is necessary).
-
-**Step 7 — Frontend receives data, re-renders.** Axios resolves the promise, TanStack Query caches the result under its query key (`['stats']`), and every component subscribed to that query key re-renders with real data instead of the loading placeholder.
-
-**Step 8 — User triggers a write (e.g. "Run scan").** This is the interesting path and is traced in full, line by line, in [§21.1](#211-launching-a-scan-the-complete-trace).
-
----
-
-## 6. Data Model & Database
-
-### 6.1 Why SQLAlchemy async + why SQLite in production
-
-The ORM (**Object-Relational Mapper** — a library that lets you manipulate database rows as Python objects instead of writing raw SQL) is **SQLAlchemy 2.0**, used through its async API (`AsyncSession`, `create_async_engine`). Every database call in this codebase is `await`ed. This matters because FastAPI runs on an async event loop — a *synchronous* blocking database call would freeze that entire event loop, stalling every other in-flight request on the server (not just the one making the DB call), for the duration of the query.
-
-**Simple explanation:** imagine one cashier serving a whole line of customers. If handling one customer's request means the cashier has to walk to a back room and can't help anyone else in the meantime, that's *synchronous*. If instead the cashier can start six people's orders cooking at once and switch between them while each one waits, that's *asynchronous* — the same cashier serves far more people in the same amount of time.
-
-**Technical explanation:** Python's `asyncio` runs a single-threaded event loop. An `async def` function that reaches an `await` on I/O (a network call, a disk read) yields control back to the loop, which can run other pending coroutines during that wait. A blocking call inside an async function never yields, so it monopolizes the loop.
-
-**Why SQLite, not Postgres, in the live deployment:** `render.yaml` sets `DATABASE_URL=sqlite+aiosqlite:///./secrets_scanner.db`. This is a deliberate zero-cost choice for a free-tier deployment: SQLite needs no separate hosted database service, has zero monthly cost, and requires zero connection-pool tuning. `database.py` special-cases this:
-
-```python
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=False,
-    **({} if "sqlite" in settings.DATABASE_URL else {"pool_size": 10, "max_overflow": 20}),
-)
-```
-
-Connection **pool sizing** (keeping a set of reusable open connections rather than opening a new TCP connection per query) only applies to network databases like Postgres — SQLite is a local file, so pool settings are meaningless there and are skipped. The **same code path** (the ORM models, the queries, `init_db()`) works against Postgres unchanged — the `docker-compose.yml` local dev environment proves this by running Postgres 16 instead, and `asyncpg` (the async Postgres driver) is already listed in `requirements.txt`. Switching the deployed database to Postgres is a one-line `DATABASE_URL` change, not a code change.
-
-### 6.2 Schema
-
-Three tables, defined in `backend/app/models.py` using SQLAlchemy 2.0's typed `Mapped[...]` declarative style:
-
-```text
-┌─────────────────────────┐          ┌──────────────────────────────┐
-│  scans                  │          │  findings                     │
-├─────────────────────────┤  1    N  ├────────────────────────────────┤
-│ id (PK, uuid4 str)       │─────────▶│ id (PK, uuid4 str)             │
-│ source_type              │          │ scan_id (FK → scans.id,        │
-│ source_ref                │          │   ON DELETE CASCADE)          │
-│ scan_git_history          │          │ file_path, line_number         │
-│ max_commits                │          │ secret_type, matched_string    │
-│ min_entropy                 │          │ entropy, severity, confidence   │
-│ status                       │          │ context, commit_hash            │
-│ total_findings                │          │ remediation, is_in_history        │
-│ files_scanned                   │          │ risk_score, risk_factors (JSON)     │
-│ progress                          │          │ occurrences                          │
-│ error_message                       │          │ introduced_at, last_seen_at            │
-│ created_at, completed_at              │          │ exposure_days, commits_affected          │
-└─────────────────────────┘          │ authors_count                              │
-                                       └──────────────────────────────┘
-
-┌────────────────────────────┐
-│  scan_schedules              │   (independent — no FK to scans;
-├────────────────────────────┤    tracks last_scan_id as a loose string
-│ id (PK, uuid4 str)           │    reference for convenience)
-│ name                           │
-│ source_type, source_ref         │
-│ cron_expression                   │
-│ scan_git_history                    │
-│ enabled                               │
-│ last_run_at, next_run_at                │
-│ last_scan_id                              │
-│ created_at                                  │
-└────────────────────────────┘
-```
-
-**Relationship:** `Scan.findings` is a SQLAlchemy `relationship()` with `cascade="all, delete-orphan"` and `lazy="selectin"`. Two consequences:
-- **`delete-orphan` cascade** — deleting a `Scan` row automatically deletes every `Finding` row that points to it. This is why `DELETE /api/v1/scans/{id}` needs no explicit cleanup code; `await db.delete(scan)` is sufficient.
-- **`lazy="selectin"`** — when a `Scan` is loaded, SQLAlchemy immediately issues a second query to eagerly fetch all its findings (rather than lazily fetching them the first time `.findings` is accessed, which would require a live database connection at serialization time — a common source of the `MissingGreenlet` / detached-instance errors that plague naive async SQLAlchemy code).
-
-**IDs are UUID4 strings, not auto-incrementing integers.** `_uuid()` generates `str(uuid.uuid4())` as the default for every primary key. This avoids ID collisions if data is ever merged across databases, and avoids leaking a monotonic "how many scans have ever been run" count to anyone who can see one ID.
-
-**Timestamps are stored as naive (timezone-unaware) UTC.** SQLite has no native timezone-aware datetime type, so `utcnow_naive()` explicitly strips timezone info after getting the current UTC time:
-
-```python
-def utcnow_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-```
-
-This is a fix for a previously-encountered bug: the original code called the now-deprecated `datetime.utcnow()`; the fix computes the timezone-*aware* current time first (the correct, non-deprecated way to get "now" in UTC) and only then discards the tzinfo, to store a value that's still numerically correct while matching SQLite's untyped storage.
-
-### 6.3 Lifecycle fields — populated conditionally
-
-`Finding.introduced_at`, `last_seen_at`, `exposure_days`, `commits_affected`, and `authors_count` are all **nullable**, and this is meaningful, not an oversight. They are populated **only** when a scan explicitly requests git-history scanning (`scan_git_history=True`, an opt-in checkbox in the UI, off by default). A plain current-tree scan never touches git history and these fields stay `None` for every finding it produces. See [§7.3](#73-git-history-scanning-opt-in) for exactly how they get computed.
-
-### 6.4 CRUD in practice
-
-**Create** — `INSERT` happens in two places: `POST /api/v1/scans` creates a `Scan` row immediately (status `"queued"`, no findings yet), then a background task creates zero-or-more `Finding` rows once scanning finishes. `POST /api/v1/schedules` inserts one `ScanSchedule` row.
-
-**Read** — every list endpoint uses `select(...).order_by(...).limit(...).offset(...)` for pagination; every single-record endpoint uses `await db.get(Model, id)`, SQLAlchemy's primary-key shortcut (equivalent to `SELECT * FROM table WHERE id = ?` but with identity-map caching).
-
-**Update** — updates are done by loading an ORM object, mutating its attributes in Python, and relying on SQLAlchemy's **unit-of-work pattern**: the session tracks which loaded objects have changed and auto-generates the correct `UPDATE` statement at commit time. Nowhere in this codebase is a raw `UPDATE` statement written by hand. Example, from `_run_scan`:
-```python
-scan.status = "completed"
-scan.total_findings = len(findings)
-await db.commit()   # SQLAlchemy diffs the object and emits UPDATE scans SET status=..., total_findings=... WHERE id=...
-```
-
-**Delete** — `await db.delete(scan)` followed by `await db.commit()`; the cascade (§6.2) handles child rows.
-
----
-
-## 7. The Detection Engine (Core Domain Logic)
-
-This is the heart of the product. It lives entirely in `backend/app/scanner/core.py` and `patterns.py`, and it is **pure Python with zero external API calls** — everything here runs locally in the process, deterministically, on text already in memory.
-
-### 7.1 The three-layer pipeline
-
-```text
-line of source code
-        │
-        ▼
-┌───────────────────────┐
-│ 1. Comment skip        │  Lines starting with # // <!-- -- (but never
-│                        │  "-----BEGIN", which would wrongly hide PEM keys)
-└──────────┬─────────────┘
-           ▼
-┌───────────────────────┐
-│ 2. Regex pattern match  │  26 SecretPattern rules run in sequence.
-│    (patterns.py)         │  Format-specific patterns (AWS key shape, Stripe
-│                            │  key shape, etc.) match with high confidence.
-└──────────┬─────────────────┘
-           ▼
-┌───────────────────────┐
-│ 3. Placeholder filter   │  is_placeholder() rejects fixtures/examples
-│    (patterns.py)          │  ("YOUR_KEY_HERE", "${API_KEY}", low-entropy
-│                             │  bare words) before they're ever reported.
-└──────────┬──────────────────┘
-           ▼
-┌───────────────────────┐
-│ 4. Entropy gate          │  Non-format-specific patterns (Generic API Key,
-│    (_shannon_entropy)     │  Generic Secret, Hardcoded Password) must also
-│                             │  clear a minimum randomness threshold.
-└──────────┬──────────────────┘
-           ▼
-┌───────────────────────┐
-│ 5. Severity + risk score  │  Test-file findings get downgraded one level.
-│    (risk.py)                │  compute_risk_score() produces 0-100 + reasons.
-└──────────┬──────────────────┘
-           ▼
-      Finding object
-```
-
-### 7.2 Pattern matching — `patterns.py`
-
-Each of the **26 patterns** is a `SecretPattern` dataclass:
-
-```python
-@dataclass
-class SecretPattern:
-    name: str              # e.g. "AWS Access Key"
-    regex: str              # the detection regex
-    severity: str            # CRITICAL | HIGH | MEDIUM | LOW
-    format_specific: bool      # if True, skip the entropy check entirely
-    remediation: str             # human-readable fix instructions
-```
-
-Example — the AWS Access Key pattern:
-```python
-SecretPattern(
-    name="AWS Access Key",
-    regex=r"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])",
-    severity="CRITICAL",
-    format_specific=True,
-    remediation="1. Immediately revoke this key in AWS IAM Console...",
-)
-```
-`(?<![A-Z0-9])` and `(?![A-Z0-9])` are **negative lookaround assertions** — they require the match to *not* be immediately preceded or followed by another alphanumeric character, preventing a partial match inside a longer random string from being flagged as a real AWS key.
-
-The 26 covered credential types span AWS, GCP, GitHub (PAT/OAuth/App tokens), Stripe (live/test), Slack (bot/app tokens), Twilio, SendGrid, private SSH/PGP keys, JWTs, database connection strings (Postgres/MySQL/Mongo/Redis/MSSQL/Oracle), Azure (storage keys, SAS tokens), npm/PyPI publish tokens, Discord bot tokens, and Mailgun keys — plus three **generic, non-format-specific** catch-alls (Generic API Key, Generic Secret, Hardcoded Password) that rely on entropy rather than a fixed shape.
-
-**Placeholder detection** (`is_placeholder`) is what keeps precision usable — without it, every `API_KEY="your_key_here"` in a README would be flagged as a real leak. It runs 14 regex patterns (`example`, `${VAR}`, `<PLACEHOLDER>`, `xxx...`, ends with `_here`, etc.). Most placeholder words require a word boundary so real keys such as Stripe's `sk_test_…` are not suppressed, but `example` matches anywhere because vendor documentation embeds it mid-token — AWS's own sample key `AKIAIOSFODNN7EXAMPLE` would otherwise be reported as a CRITICAL leak. The rules run alongside two structural heuristics: strings shorter than 8 characters are rejected outright, and strings with a **unique-character ratio below 0.3** (fewer than 30% of characters are distinct — i.e., highly repetitive, like `"aaaaaaaaaa"`) are rejected as unlikely to be real secrets.
-
-**Test-file downgrading** (`is_test_file` + `_downgrade`) checks the file path against patterns like `/tests?/`, `.spec.`, `_test\.py` and, if matched, moves the severity one step down the ladder (`CRITICAL → HIGH → MEDIUM → LOW`, capped at `LOW`). A hardcoded password in `tests/fixtures.py` is real code smell but far less urgent than the same string in `payment/stripe.py`.
-
-### 7.3 Entropy analysis — Shannon entropy
-
-**Simple explanation:** entropy measures how "random-looking" a string is. The word `"password"` is entropy-*low* — it's made of common letters in a predictable order, and if you know part of it you can often guess the rest. A string like `"kX9#mQ2$vL8pR4nZ"` is entropy-*high* — every character is close to unpredictable given the ones around it. Real cryptographic secrets, being generated by a computer's random-number generator, are almost always high-entropy; English words and simple test values are almost always low-entropy.
-
-**Technical explanation:** the implementation is Shannon's information-entropy formula, applied per-character over the candidate string:
-
-```python
-def _shannon_entropy(data: str) -> float:
-    counts: dict[int, int] = {}
-    for ch in data:
-        counts[ord(ch)] = counts.get(ord(ch), 0) + 1
-    n = len(data)
-    return -sum((c / n) * math.log2(c / n) for c in counts.values())
-```
-
-For each distinct character, compute its frequency `p = count / n`, then sum `-p * log2(p)` across all distinct characters. The result is the average number of bits of "surprise" per character. A string using only one repeated character has entropy 0 (zero surprise — you already know the next character). A string using many characters in roughly equal proportion approaches `log2(alphabet size)` — for a 62-character alphanumeric alphabet, the theoretical maximum is about 5.95 bits/char.
-
-**Why entropy alone isn't enough (and why patterns run first):** entropy has no concept of *meaning* — a random English sentence isn't high-entropy, but neither is a hash of the word "password", which is dangerous but predictable. That's why entropy is used as a **secondary gate**, not the primary detector: format-specific patterns (`format_specific=True`, like the AWS key shape) skip the entropy check entirely and rely purely on the exact structural match, while only the three generic catch-all patterns (which have no fixed shape to match against) require the matched text to also clear the entropy threshold (default `3.5` bits, user-configurable per scan between 0 and 8).
-
-### 7.4 Confidence, severity, and masking
-
-- **Confidence** (`_confidence`) is a coarse `HIGH`/`MEDIUM`/`LOW` label derived from whether the match was pattern-based and how high its entropy is — pattern match + entropy > 4.5 = `HIGH`.
-- **Severity** comes directly from the matched `SecretPattern.severity`, then possibly downgraded for test files (§7.2).
-- **Masking** (`_mask`) keeps the first and last four characters (`AKIAV3WBCDEF4GHI7JKM` → `AKIA************7JKM`) — enough to tell *which* credential to rotate, not enough to use it. It applies to two persisted fields: `matched_string`, and `context` (the source line). `context` masks *every* secret detected on that line (`_mask_secrets_in`), so a line holding two secrets never leaks the other one through either finding. For paste scans, the pasted text itself is never written to the database: `source_ref` stores `paste:<first 12 hex chars of its SHA-256>` and the content reaches the scan task only in memory. Identical pastes produce the same label, so re-scanning the same content still finds a differential baseline.
-  *History note:* before the October 2026 hardening pass, `context` stored the raw line and `source_ref` stored the full pasted content, so secrets were returned by the API and every export. Any database populated before that change still contains them.
-
-### 7.5 Git history scanning — opt-in
-
-This is the feature that differentiates CipherWatch from a simple "grep for AWS keys" script. A secret **removed** from the current version of a file is still permanently present in that file's older commits — `git log` never forgets. `scan_git_history()` (in `core.py`) walks a repository's commit history to catch exactly this case.
-
-**Critical detail: this is not automatic.** It runs only when the "Include git history" checkbox is checked in the New Scan form (`scan_git_history: bool = False` by default on both the `Scan` model and the `StartScanRequest` schema). A default scan only ever examines the current working tree. This is a deliberate cost/thoroughness trade-off, made explicit here rather than glossed over: history scanning means **re-scanning the full file tree at every single commit** — `O(commits × files)`, not a diff between consecutive commits — so it's meaningfully slower, and paying that cost by default on every scan would be wasteful for the common case where a user just wants a quick check of the current state.
-
-```python
-commits = list(repo.iter_commits("HEAD", max_count=max_commits))
-for commit in commits:
-    for item in commit.tree.traverse():          # every file, at this commit
-        if item.type != "blob": continue
-        content = item.data_stream.read().decode(...)
-        for f in scan_text(content, item.path, min_entropy,
-                           commit_hash=short_sha, is_history=True):
-            key = (f.file_path, f.secret_type, f.matched_string)
-            # aggregate: same secret seen in multiple commits collapses to ONE finding
-            ...
-```
-
-Findings are **de-duplicated by `(file_path, secret_type, matched_string)`** and aggregated across every commit they appear in. This is why a secret sitting in 9 commits surfaces once, with a complete exposure picture, instead of nine separate findings for the same leak. The aggregation tracks:
-- `first_dt` / `last_dt` — earliest and latest commit timestamps the secret appeared in → `introduced_at`, `last_seen_at`
-- `exposure_days = (last_dt - first_dt).days`
-- `commits` (a `set` of short SHAs) → `commits_affected = len(commits)`
-- `authors` (a `set` of lowercased emails/names) → `authors_count = len(authors)`
-
-Once history walking finishes, **risk is recomputed** using this richer context (`compute_risk_score(..., is_in_history=True, occurrences=..., exposure_days=..., authors_count=...)`) — a secret's risk score is genuinely higher once its full exposure history is known, which is exactly the intended behavior.
-
-### 7.6 The exposure risk model — `risk.py`
-
-**Simple explanation:** not every leaked secret is equally scary. A test API key that's been in one commit for one day is a minor issue; a live payment-processor secret key that's been sitting in history for three months, touched by five different developers, is an emergency. The risk score turns "how bad is this, really?" into a single number you can sort and filter by, with a plain-English list of *why*.
-
-**Technical explanation:** it is a **deliberately transparent, additive heuristic** — explicitly not a black-box ML model. Every point added to the score comes with a human-readable reason string, so the score can be explained and defended, not just trusted:
-
-```python
-_SEVERITY_BASE = {"CRITICAL": 55, "HIGH": 35, "MEDIUM": 18, "LOW": 8}
-
-def compute_risk_score(severity, *, is_in_history=False, occurrences=1,
-                        exposure_days=None, authors_count=None, entropy=0.0):
-    score = _SEVERITY_BASE[severity]                       # start from severity
-    if is_in_history:            score += 18                # present in git history
-    if occurrences > 1:          score += min((occurrences-1)*3, 12)  # capped bonus
-    if exposure_days:            score += 5 to 15 (tiered)   # longer exposure = worse
-    if authors_count > 1:        score += 5                  # more people had access
-    if entropy >= 5.0:           score += 5                  # very random-looking
-    return min(score, 100), factors   # hard cap at 100
-```
-
-Each contributing rule appends a factor string (`"Present in Git history"`, `"Extended exposure (10 days)"`, `"Touched by 3 authors"`) to a list that ships alongside the score all the way to the UI, where it renders as the "Contributing factors" list under an expanded finding. `risk_band()` collapses the numeric score into a coarse `CRITICAL`/`HIGH`/`MEDIUM`/`LOW` label (thresholds at 80/55/30) used for UI color-coding.
-
-### 7.7 SARIF export — `sarif.py`
-
-**SARIF (Static Analysis Results Interchange Format)** is an OASIS-standard JSON schema for representing the output of any static-analysis tool in a common shape, so that different tools' results can be consumed by the same downstream systems. `sarif.py` builds a **2.1.0-conformant** document: one `rule` per distinct secret type seen in the scan (deduplicated), one `result` per finding with a `physicalLocation` (file + line) and a `partialFingerprints` value (`file_path:secret_type:matched_string`) that lets a consumer track the same finding across multiple scans even if line numbers shift. Severity maps to SARIF's `level` (`error`/`warning`/`note`) and to a numeric `security-severity` (0.0–10.0) that GitHub's Security tab uses for its own severity coloring. This exact format is what GitHub Advanced Security's code-scanning upload API expects — a SARIF file from this endpoint can be uploaded directly and will populate GitHub's native Security → Code scanning alerts view.
-
-### 7.8 Remediation generation — `remediation.py`
-
-Given a finding, `remediation.py` answers "what do I actually type to fix this?" without needing repository write access or opening a pull request (a deliberately lightweight approach — see [§22](#22-design-decisions--trade-offs)). It:
-1. Derives an environment-variable name — preferring the *original* identifier from the source line if one is parseable (`stripe_key = "..."` → `STRIPE_KEY`), falling back to a curated map of 26 conventional names (`AWS Access Key` → `AWS_ACCESS_KEY_ID`) if not.
-2. Detects the file's language from its extension and produces an idiomatic replacement line — `os.getenv(...)` for Python, `process.env.X` for Node, `ENV["X"]` for Ruby, `os.Getenv(...)` for Go, `getenv(...)` for PHP, `${X}` for a `.env` file.
-3. Assembles a `.env.example` snippet (deduplicated across all findings in the scan) and a numbered list of next steps (rotate the credential, move it to a secrets manager, update CI/CD secrets, add `.gitignore` rules, purge from git history if needed).
-4. Optionally formats all of the above as a downloadable `remediation.patch` — a unified-diff-*styled* text file (grouped by file, `@@ line N — TYPE (SEVERITY) @@` hunks with `-before`/`+after`). It is explicitly documented as **not guaranteed to `git apply` cleanly**, since the stored `matched_string` is masked, not the real secret — it's meant to give an engineer an exact, copy-pasteable before/after per finding, not a robotic auto-fix.
-
----
-
-## 8. Backend: File-by-File Walkthrough
-
-### `backend/app/config.py`
-**Purpose:** the single place environment variables are read. Uses `pydantic-settings`'s `BaseSettings`, which auto-populates every declared field from environment variables of the same name (and from a local `.env` file if present) with full type validation and coercion (`SMTP_PORT: int` will reject a non-numeric value at startup, not at first use).
-**Imported by:** almost every other backend module (`database.py`, `routers/scans.py`, `notifications.py`, `github_scanner.py`) via `from .config import settings`, a single shared instance instantiated once at import time.
-**Why it exists:** centralizes configuration so no file reads `os.environ` directly, and so all defaults live in one auditable place.
-
-### `backend/app/database.py`
-**Purpose:** creates the async SQLAlchemy engine and session factory; defines `Base` (the declarative base every model inherits); provides `init_db()` (creates tables if they don't exist — called once at app startup) and `get_db()` (the FastAPI dependency every route uses to get a session).
-**Executes:** `init_db()` runs once, at process startup, inside `main.py`'s `lifespan`. `get_db()` runs once *per incoming request* that declares it as a dependency.
-**Relationship with other files:** everything that touches the database imports from here.
-
-### `backend/app/models.py`
-Covered in depth in [§6.2](#62-schema). Defines the three ORM classes and the two shared helper functions `_uuid()` and `utcnow_naive()`.
-
-### `backend/app/schemas.py`
-**Purpose:** defines every Pydantic model used at the HTTP boundary — both the shape of data coming *in* (`StartScanRequest`, `ScheduleCreate`) and the shape of data going *out* (`ScanOut`, `FindingOut`, `StatsOut`, `ScanDiffOut`). This is the layer where **input validation** lives.
-
-The two "in" models both route through a shared `_validate_source()` helper via Pydantic's `@model_validator(mode="after")` (runs after individual-field validation, when the whole object is assembled, so it can see both `source_type` and `source_ref` together):
-
-```python
-def _validate_source(source_type: str, source_ref: str) -> str:
-    if not source_ref.strip():
-        raise ValueError("source_ref must not be empty")
-    if source_type == "github":
-        candidate = source_ref.strip().removesuffix(".git")
-        if not _GITHUB_URL_RE.match(candidate):
-            raise ValueError("source_ref must be a GitHub repository URL like https://github.com/owner/repo")
-        return candidate.rstrip("/")
-    if len(source_ref.encode("utf-8")) > MAX_PASTE_BYTES:  # 512 KB
-        raise ValueError(f"Pasted content exceeds 512 KB limit")
-    return source_ref
-```
-This is a **public-facing API with no authentication**, so it is hardened defensively: GitHub URLs are checked against a strict regex allow-list (`https://github.com/{owner}/{repo}`, normalizing away a trailing `.git` or `/`) rather than accepted as arbitrary strings, and pasted-code submissions are capped at 512 KB to prevent someone from submitting gigabytes of text as a denial-of-service vector. `ScheduleCreate` is stricter still. It accepts only `github` sources (pasted content is never stored, so there is nothing to rescan). Its `cron_expression` is parsed with the same `CronTrigger` APScheduler uses, so an out-of-range field such as `99 * * * *` is rejected with a 422 instead of failing later as a 500. It also samples the next fire times and rejects anything that runs more often than **every 15 minutes**: schedules execute unattended against a public, unauthenticated API, and an every-minute history scan would monopolize the server.
-
-### `backend/app/notifications.py`
-**Purpose:** sends a single HTML email via `aiosmtplib` (an async SMTP client — chosen, like everything else in this backend, so a slow network call to an external SMTP server never blocks the event loop) when a scan produces CRITICAL findings.
-**When it executes:** called (as a fire-and-forget `asyncio.create_task(...)`, not awaited directly) from `routers/scans.py` at the end of `_run_scan()`, only if `critical > 0`.
-**Fails safe:** the send is wrapped in `try/except` that logs a warning — a broken SMTP config or a transient network failure must never crash or fail a scan; the scan result is already saved regardless of whether the email succeeds.
-**Escapes user input:** the scan source is user-supplied, so it (and the scan id and report URL) pass through `html.escape` before going into the HTML body — otherwise a crafted source could inject markup or links into an email sent from a trusted address. Paste scans are labelled `pasted content` in the email; the pasted text itself is never included.
-**Task lifetime:** the caller keeps a strong reference to the `create_task` handle in a module-level set until it finishes, because asyncio holds only weak references to tasks and an unreferenced one can be garbage-collected mid-send.
-**Silently skips if unconfigured:** the function's first line checks `if not all([SMTP_USER, SMTP_PASSWORD, ALERT_EMAIL]): return` — so on a fresh deployment with no SMTP env vars set, this is simply a no-op, not an error.
-
-### `backend/app/main.py`
-**Purpose:** the FastAPI application entrypoint — where the four routers get mounted under the shared `/api/v1` prefix, where CORS is configured, and where the app's startup/shutdown behavior is defined.
-```python
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await init_db()                                   # create missing tables
-    interrupted = await scans.mark_interrupted_scans()  # fail scans a restart cut off
-    start_scheduler()                                 # boot APScheduler
-    restored = await restore_schedules()              # rebuild jobs from the DB
-    yield                                             # app serves requests here
-    stop_scheduler()                                  # graceful shutdown
-```
-The two reconciliation steps exist because both pieces of state they repair live only in process memory. Background scans die with the process, so `mark_interrupted_scans()` marks anything still `queued`/`running` as `failed` rather than reporting it as running forever. APScheduler's job store is also in memory, so without `restore_schedules()` every restart — and the free tier sleeps after 15 idle minutes — would silently drop every schedule while the database and UI still showed them armed.
-This is FastAPI's **lifespan context manager** pattern — code before `yield` runs at startup, code after runs at shutdown, replacing the older, separately-declared `@app.on_event("startup")`/`@app.on_event("shutdown")` handlers with a single readable block.
-**Also defines** the one route not inside a router: `GET /health`, used by the frontend's wake-up ping and by Render's own health checks.
-
-### `backend/app/routers/scans.py`
-The largest and most important router — covered function-by-function in [§9](#9-rest-api-reference) and [§10](#10-websocket-real-time-progress). Owns: scan creation, listing, single-scan retrieval, findings listing/filtering, the diff endpoint, deletion, and the WebSocket endpoint. Also owns `_run_scan()`, the private async function that does the actual work of running a scan in the background (see the full trace in [§21.1](#211-launching-a-scan-the-complete-trace)).
-**Pasted content is never persisted.** `start_scan` stores `source_ref = paste_label(content)` — `paste:` plus the first 12 hex characters of the content's SHA-256 — and hands the content itself to `_run_scan` as an in-memory argument. Pasted text contains exactly the secrets being scanned for, and before this change it was stored whole and returned by `GET /scans`, the SARIF export, and the alert email. Identical pastes produce the same label, so re-scanning the same content still finds a differential baseline.
-**Scanning runs off the event loop.** `scan_text` is CPU-bound, so `_run_scan` calls it through `asyncio.to_thread`; otherwise one scan would freeze every other request, health check, and progress broadcast for its full duration.
-
-### `backend/app/scanner/github_scanner.py`
-**Purpose:** fetch a public GitHub repository and run the detection engine over it, optionally including git history.
-**Download:** the repository is fetched as a single zipball from the GitHub API (no `git clone` needed for the current tree) and **streamed to a temp file**, never held in memory. The stream aborts past `MAX_ARCHIVE_BYTES` (100 MB).
-**Extraction (`_safe_extract`):** before a single byte is decompressed, the zip's central directory is checked against `MAX_ARCHIVE_MEMBERS` (50,000 files) and `MAX_EXTRACTED_BYTES` (500 MB uncompressed — the zip-bomb guard), and every member path is resolved to confirm it stays inside the destination (the zip-slip guard). Validating everything first means a bad archive never leaves a partial extraction behind.
-**Concurrency:** extraction, the directory scan, and the history clone-and-walk all run via `asyncio.to_thread`. Measured on `pallets/flask`, this cut the longest event-loop stall from 458 ms to 29 ms for a current-tree scan and from **21 s to 25 ms** for a scan with history, with total scan time unchanged.
-**History is best-effort:** if the clone or history walk fails, the current-tree findings are still returned and the failure is logged.
-
-### `backend/app/routers/export.py`
-Four `GET` endpoints, all following the same shape: load the scan + its findings, hand them to a pure function in `scanner/` (`build_sarif`, `build_remediation`, `build_patch`), and stream the result back as a file download via `StreamingResponse` with a `Content-Disposition: attachment` header (which is what makes a browser download the response instead of displaying it inline). `json`/`csv`/`sarif`/`patch` are downloads; `remediation` returns plain JSON (meant to be consumed by a UI, not downloaded).
-
-### `backend/app/routers/schedules.py`
-Standard CRUD for `ScanSchedule` rows, with one twist: every mutation also calls into `workers/scheduler.py` to keep the **in-memory APScheduler job registry** in sync with the database — creating a schedule registers a cron job, toggling `enabled` pauses/resumes that job, deleting removes it. The database row and the scheduler's live job are two separate pieces of state that must be kept consistent by every mutating endpoint (see [§11](#11-background-jobs-scheduling--email-alerts) for why this dual-state exists and its implications).
-
-### `backend/app/routers/stats.py`
-One endpoint, `GET /api/v1/stats`, that powers the Overview dashboard. Runs five separate queries: total scan count, total finding count, per-severity counts (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`), a `GROUP BY secret_type` for the "most detected" ranking (capped at top 20), the five most recent scans, and a `GROUP BY date(created_at)` for the findings-over-time trend chart (capped at 30 rows). All aggregation happens in SQL, not in Python — the database counts rows so the application server never has to load every finding into memory just to count them.
-
-### `backend/app/workers/scheduler.py`
-Covered in [§11](#11-background-jobs-scheduling--email-alerts).
-
-### `backend/seed_demo.py`
-A standalone script (run once, at Render deploy time, via `render.yaml`'s `startCommand`) that inserts realistic demo data — 8 pre-built scans across 7 fictional `acme-corp` repositories with 44 total findings, correct risk scores computed through the real `compute_risk_score()` function, and simulated lifecycle data for git-history findings — so a first-time visitor to the live deployment sees a populated dashboard instead of an empty one. It checks `if count >= len(DEMO_SCANS): return` first, so re-running it on every deploy is idempotent and never duplicates data.
-
----
-
-## 9. REST API Reference
-
-All routes are mounted under `/api/v1` except `/health`. Interactive Swagger docs are auto-generated by FastAPI at `/docs` on the live deployment.
-
-| Method | Path | Purpose |
+| Table | Purpose | Key columns |
 |---|---|---|
-| `POST` | `/api/v1/scans` | Start a new scan (returns immediately, `202 Accepted`) |
-| `GET` | `/api/v1/scans` | List scans, paginated |
-| `GET` | `/api/v1/scans/{id}` | Get one scan + all its findings |
-| `GET` | `/api/v1/scans/{id}/findings` | Findings only, filterable by severity/type |
-| `GET` | `/api/v1/scans/{id}/diff` | Compare against the previous scan of the same source |
-| `DELETE` | `/api/v1/scans/{id}` | Delete a scan (cascades to its findings) |
-| `WS` | `/api/v1/scans/ws/{id}` | Live progress stream for one scan |
-| `GET` | `/api/v1/export/{id}/json` | Download full results as JSON |
-| `GET` | `/api/v1/export/{id}/csv` | Download findings as CSV |
-| `GET` | `/api/v1/export/{id}/sarif` | Download SARIF 2.1.0 (GitHub Advanced Security compatible) |
-| `GET` | `/api/v1/export/{id}/remediation` | Structured remediation report (JSON) |
-| `GET` | `/api/v1/export/{id}/patch` | Download remediation.patch |
-| `GET` | `/api/v1/stats` | Dashboard aggregate statistics |
-| `POST` | `/api/v1/schedules` | Create a recurring scan schedule |
-| `GET` | `/api/v1/schedules` | List all schedules |
-| `GET` | `/api/v1/schedules/{id}` | Get one schedule |
-| `PATCH` | `/api/v1/schedules/{id}/toggle` | Enable/pause a schedule |
-| `DELETE` | `/api/v1/schedules/{id}` | Delete a schedule |
-| `GET` | `/health` | Liveness check |
+| `scans` | One scan run | `source_type` (`github`/`paste`), `source_ref` (`VARCHAR(300)`, indexed: a normalized GitHub URL or a `paste:<12 hex>` label), `scan_git_history`, `max_commits`, `min_entropy`, `status` (`queued`/`running`/`completed`/`failed`), `progress`, `total_findings`, `files_scanned`, `error_message`, `created_at`, `completed_at` |
+| `findings` | One detection at one location | `scan_id` (FK, cascade delete), `file_path`, `line_number`, `secret_type`, `matched_string` (**masked**), `entropy`, `severity`, `confidence`, `context` (line with **every** secret masked), `commit_hash`, `remediation`, `is_in_history`, `risk_score`, `risk_factors` (JSON), lifecycle fields (`introduced_at`, `last_seen_at`, `exposure_days`, `commits_affected`, `authors_count`), `fingerprint` (`VARCHAR(32)`, indexed, nullable) |
+| `credential_states` | Triage decision per credential per project | `source_ref`, `fingerprint`, `status`, `note`, `review_by`, `updated_at`; **unique** on (`source_ref`, `fingerprint`) |
+| `scan_schedules` | Recurring scans | `name`, `source_type` (`github` only), `source_ref`, `cron_expression` (UTC), `scan_git_history`, `enabled`, `last_run_at`, `next_run_at`, `last_scan_id` |
+| `app_settings` | Install-level key/value | `fingerprint_key` (hex, when not supplied by env), `demo_seeded` marker |
 
-### `POST /api/v1/scans`
+`Scan.findings` uses `cascade="all, delete-orphan"` (deleting a scan deletes its findings) and `lazy="selectin"` (findings are loaded eagerly, avoiding async lazy-load errors at serialization time). Triage state lives in its own table, keyed by fingerprint rather than by finding row, which is what lets it survive rescans.
 
-**Request body** (`StartScanRequest`):
-```json
-{
-  "source_type": "github",
-  "source_ref": "https://github.com/owner/repo",
-  "scan_git_history": false,
-  "max_commits": 100,
-  "min_entropy": 3.5
-}
-```
-**Validation** (in `schemas.py`, described in §8): `source_type` must be exactly `"github"` or `"paste"` (regex-pattern-constrained field); if `github`, `source_ref` must match the GitHub-URL allow-list; if `paste`, `source_ref` must be non-empty and under 512 KB; `max_commits` is clamped `1–1000`; `min_entropy` is clamped `0.0–8.0`.
-**Processing:** inserts a `Scan` row with `status="queued"` (for pastes, `source_ref` is stored as a `paste:<digest>` label, never the content), registers `_run_scan` as a FastAPI `BackgroundTask` — passing pasted content to it in memory — and returns before that task has run — the client gets the new scan's `id` immediately and is expected to open a WebSocket (or poll `GET /scans/{id}`) to observe progress.
-**Response:** `202 Accepted`, body is a `ScanListItem` (the just-created row, `status: "queued"`).
-**Errors:** `422 Unprocessable Entity` with a Pydantic-formatted `detail` array if validation fails (e.g. a non-GitHub URL, an oversized paste).
+### 4.2 Migrations: additive upgrades at startup
 
-**Example response:**
-```json
-{
-  "id": "1797b0e5-...",
-  "source_type": "github",
-  "source_ref": "https://github.com/owner/repo",
-  "status": "queued",
-  "total_findings": 0,
-  "files_scanned": 0,
-  "progress": 0,
-  "created_at": "2026-07-27T10:30:00",
-  "completed_at": null
-}
-```
+There is no Alembic. `init_db()` runs on every start:
 
-### `GET /api/v1/scans/{scan_id}/diff`
-**Processing:** looks up the most recent *other, completed* scan sharing the same `source_ref` (`Scan.created_at < this_scan.created_at`, ordered descending, `limit(1)`). If none exists, returns `{"has_baseline": false, "current_total": N}` immediately. Otherwise, both scans' findings are loaded and each is reduced to a stable identity key: `(file_path, secret_type, matched_string)` — deliberately **not** including `line_number`, because a single unrelated line added earlier in a file would shift every subsequent finding's line number without the secret itself having moved. Python `set` difference (`cur_map.keys() - base_map.keys()`) computes new vs. resolved vs. unchanged in three operations.
-**This is computed on demand, not stored** — every call to this endpoint re-runs the comparison; there's no cached "diff" table.
+1. `Base.metadata.create_all` creates any missing tables. That's how pre-3.0 databases gain `credential_states` and `app_settings`.
+2. `_apply_additive_upgrades()` inspects existing tables and, idempotently:
+   - adds `findings.fingerprint` if it's missing, plus the index `ix_findings_fingerprint`;
+   - creates `ix_scans_source_ref`, **unless** some `source_ref` value is longer than 300 characters. Databases from before 2.1 stored whole pastes in `source_ref`, and PostgreSQL refuses btree index entries over about 2.7 KB (`ProgramLimitExceededError`), which would stop the server from starting. In that case the index is skipped with a logged warning. It is only a speed-up, so correctness is unaffected, and the legacy rows are left untouched.
+3. `_load_fingerprint_key()` configures the HMAC key (§5.6).
 
-### `GET /api/v1/export/{scan_id}/sarif`
-**Response headers:** `Content-Type: application/sarif+json`, `Content-Disposition: attachment; filename="scan_XXXXXXXX.sarif"`.
-**Files involved:** `routers/export.py` → `scanner/sarif.py`.
-**Execution flow:** load scan + findings from DB → `build_sarif(scan, findings)` (pure function, §7.7) → `json.dumps(..., indent=2)` → stream as bytes.
+Only nullable columns and indexes are ever added; nothing is dropped or rewritten. Verified on SQLite and PostgreSQL 18, including the oversized-legacy-row case (§18). Anything destructive would need a real migration tool.
+
+**Legacy rows.** Findings written before 3.0 have no fingerprint. The inventory service gives them a stand-in key, `"l"` followed by 31 hex characters of `sha256(secret_type|matched_string|file_path)`, so they still group and can still be triaged (tested). Pre-2.1 rows may also contain unmasked context or pasted content; 3.0 doesn't rewrite them (see §21).
 
 ---
 
-## 10. WebSocket: Real-Time Progress
+## 5. The detection engine
 
-**Simple explanation:** a normal web request is like sending a letter and waiting for a reply — one question, one answer, then the conversation ends. A WebSocket is like opening a phone line and leaving it connected: either side can speak at any time without hanging up and redialing. Here, the server uses that open line to shout out progress updates ("20% done… 80% done… complete!") as they happen, instead of the browser having to keep calling back and asking "are you done yet?"
+Everything in this section lives in `backend/app/scanner/` and runs in memory, deterministically, with no network calls except fetching the repository itself.
 
-**Technical explanation:** `GET /api/v1/scans/ws/{scan_id}` is a WebSocket endpoint (`@router.websocket(...)`), which starts as a normal HTTP request but is *upgraded* to a persistent, bidirectional TCP connection via the `Upgrade: websocket` handshake. Once accepted, the connection stays open until either side closes it.
+### 5.1 Pipeline per line
 
-**Honest architectural note — this connection is push-only in practice.** The handler is:
-```python
-@router.websocket("/ws/{scan_id}")
-async def scan_websocket(websocket: WebSocket, scan_id: str):
-    await websocket.accept()
-    _ws_registry.setdefault(scan_id, []).append(websocket)
-    try:
-        while True:
-            await asyncio.sleep(30)     # keeps the coroutine alive; never reads client input
-    except WebSocketDisconnect:
-        ...  # cleanup on close
+```text
+line ─▶ comment skip ─▶ 26 regex patterns ─▶ placeholder filter ─▶ entropy gate ─▶ severity + risk ─▶ Finding
+        (#, //, *, <!--;          (patterns.py)    (is_placeholder)     (generic patterns   (test paths downgrade
+         never "-----BEGIN")                                             only)               one level)
 ```
-The server never calls `websocket.receive_...()`, and the frontend's `useWebSocket` hook never calls `.send()`. The client only *listens*. This means the channel is functionally identical to Server-Sent Events (SSE) — a simpler, HTTP-based, auto-reconnecting one-way push protocol. WebSocket was the tool reached for when this feature was built; there's no bidirectional control (no cancel/pause message ever sent by the client), so if this were rebuilt today, SSE would arguably be the leaner choice for this exact use case. This is a legitimate trade-off to be able to discuss plainly rather than justify with an invented requirement.
 
-**The in-memory registry:**
+### 5.2 Patterns
+
+`SecretPattern` fields: `name`, `regex`, `severity`, `format_specific` (if true, the entropy gate is skipped), `remediation`, `marker` (the match is a fixed header, not the secret), and `rotation_url`.
+
+The 26 patterns are: AWS Access Key, AWS Secret Access Key, GitHub Personal Access Token, GitHub OAuth Token, GitHub App Token, Google API Key, GCP Service Account Key (marker), Stripe Live / Test Secret Key, Slack Bot / App Token, Twilio API Key, SendGrid API Key, Private SSH Key (RSA/DSA/EC/OpenSSH header; marker), PGP Private Key (marker), JWT Token, Database Connection String, Generic API Key, Generic Secret, Hardcoded Password, Azure Storage Key, Azure SAS Token (marker), npm Auth Token, PyPI API Token, Discord Bot Token, and Mailgun API Key.
+
+**Rotation URLs:** 19 patterns across 12 providers link to the provider page where the key is revoked: AWS IAM, GitHub token settings, Google Cloud credentials and service accounts, Stripe API keys, Slack apps, Twilio, SendGrid, Azure storage accounts, PyPI, Discord, Mailgun, and npm's revocation guide. Each URL was checked to resolve (usually via a login redirect); npm's site rejects non-browser clients, so it links to `docs.npmjs.com/revoking-access-tokens` instead.
+
+**Placeholders.** `is_placeholder()` rejects `YOUR_KEY_HERE`, `${VAR}`, `<PLACEHOLDER>`, `xxx…`, `changeme`, and words such as `test`, `demo`, `sample`, `mock`, `dummy` when they start at a word boundary, strings under 8 characters, and strings with a unique-character ratio below 0.3. `example` matches anywhere, because vendor docs embed it mid-token (AWS's `AKIAIOSFODNN7EXAMPLE`).
+
+**Test-path downgrade.** Paths matching `tests/`, `.spec.`, `_test.py`, `fixtures/`, and similar drop one severity level.
+
+### 5.3 Entropy
+
+Shannon entropy, `H = −Σ pᵢ log₂ pᵢ` over characters, measures how random a string looks. Format-specific patterns skip it, since their shape is evidence enough. The three generic patterns (Generic API Key, Generic Secret, Hardcoded Password) must clear the floor (default 3.5 bits, configurable 0–8 per scan).
+
+### 5.4 File selection
+
+- **Extensions:** source and config types, plus `.pem`, `.key`, `.cfg`, and `.ipynb`.
+- **Exact filenames:** `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`, `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`, `.dockercfg`, `Dockerfile`, `credentials`, plus anything starting with `.env`.
+- **Skipped:** `IGNORE_DIRS` (`.git`, `node_modules`, `venv`, `.venv`, `__pycache__`, `build`, `dist`, `target`, `.tox`, caches, …), symlinks, and files over **5 MB** (`MAX_FILE_BYTES`). Git-history scans apply the same directory and size rules (both tested).
+- **Paths are repo-relative POSIX** (`iter_scannable_files`). GitHub zipballs wrap the tree in `{owner}-{repo}-{sha}/`, and the scanner descends into that directory first. Without this, location-scoped fingerprints would change on every scan.
+
+### 5.5 Git history (opt-in)
+
+`scan_git_history()` walks `iter_commits("HEAD", max_count=max_commits)` and scans every scannable blob at every commit. That's `O(commits × files)`, which is why it is opt-in. Matches are aggregated per `(file_path, secret_type, fingerprint)` across commits into one finding with `introduced_at`, `last_seen_at`, `exposure_days`, `commits_affected`, and `authors_count`, and the risk score is recomputed with that context. For GitHub scans the repository is cloned with `--depth=max_commits`. History is best-effort: a clone failure is logged and the current-tree results are still returned.
+
+### 5.6 Masking and fingerprints
+
+**Masking.** `_mask` keeps the first and last four characters and stars the rest (`AKIAV3WBCDEF4GHI7JKM` becomes `AKIA************7JKM`); values of 8 characters or fewer are fully starred. (The seeded demo data uses a shorter `AKIA***...***JKM` style.) `context` masks *every* secret detected on its line (`_mask_secrets_in`), so a line holding two secrets never leaks either. Pasted text is passed to the scan task in memory only; `source_ref` stores `paste:` plus 12 hex characters of its SHA-256.
+
+**Fingerprints** identify a *credential* rather than a line:
+
 ```python
-_ws_registry: dict[str, list[WebSocket]] = {}
+def fingerprint(raw, pattern, file_path, masked) -> str:
+    if pattern.marker or not pattern.format_specific:
+        material = f"loc\x00{pattern.name}\x00{file_path}\x00{masked}"   # location-scoped
+    else:
+        material = f"val\x00{raw}"                                        # value-scoped
+    return hmac.new(_fingerprint_key, material.encode(), hashlib.sha256).hexdigest()[:32]
 ```
-Maps a `scan_id` to every currently-open socket watching that scan (supporting multiple browser tabs watching the same scan). `_broadcast(scan_id, payload)` iterates that list and `send_text()`s a JSON payload to each; any socket that throws (already disconnected) is collected and pruned from the registry after the loop.
 
-**This registry is per-process, in-memory, non-persistent** — it lives only in the Python process's RAM. This is a scaling limitation worth naming honestly: if the backend ever ran as more than one process/instance behind a load balancer, a client connected to instance A would never receive a broadcast fired from instance B (which might be the instance actually running that scan's background task). A production-scale fix would move this registry to a shared pub/sub layer (Redis Pub/Sub, or a message queue) that all instances subscribe to. At the current single-instance free-tier deployment, this limitation has no practical effect.
+- **Value-scoped** for format-specific patterns: the same AWS key anywhere in the repo, in any commit, is one credential.
+- **Location-scoped** for markers, where the match is a shared header and not the secret, and for generic patterns, whose values can be low-entropy enough (`Summer2024!`) that even a keyed hash of the value is best avoided.
+- **The key.** On the server, `FINGERPRINT_KEY` (UTF-8 bytes) wins; otherwise a random 32-byte key is generated once, stored as hex in `app_settings`, and loaded with `bytes.fromhex`. The CLI uses `FINGERPRINT_KEY` (UTF-8) if set, or else the public constant `cipherwatch-fingerprint-v1`. **CLI and console fingerprints therefore match only when both get the same `FINGERPRINT_KEY` from the environment** (tested). Changing the server's key re-keys every new finding, and existing triage decisions stop matching new scans.
+- `fingerprint_key_id()` is a 12-hex HMAC of a constant under the active key. Baselines record it so a mismatched key is detected instead of silently treating everything as new.
 
-**Message shapes broadcast during a scan's lifecycle:**
+### 5.7 Risk score (`risk.py`)
+
+An additive, explainable heuristic, capped at 100. Severity sets the base (CRITICAL 55, HIGH 35, MEDIUM 18, LOW 8). Bonuses: present in git history +18; extra occurrences up to +12; exposure duration +5 to +15; more than one author +5; entropy ≥ 5.0 +5. Every point appends a reason string that the console shows. `riskBand` thresholds are 80, 55, and 30.
+
+### 5.8 SARIF and remediation
+
+- **`sarif.py`** builds SARIF 2.1.0: one rule per secret type, one result per finding, `security-severity` for GitHub's UI, and two `partialFingerprints`: the legacy `secretsScanner/v1` (`file:type:masked`), and `cipherwatch/credential/v1` (the credential fingerprint, when present), so a key that moves files is recognised as the same alert.
+- **`remediation.py`** derives an environment-variable name (from the source line, or a type map), writes idiomatic replacement lines (Python, Node, Ruby, Go, PHP, `.env`), a `.env.example` snippet, next steps, and a unified-diff-*styled* `remediation.patch`. The patch uses masked values, so it is a reference for a human, not something guaranteed to `git apply`.
+
+---
+
+## 6. The credential ledger
+
+`backend/app/services/inventory.py` turns findings into credentials. All routers that show credentials go through it.
+
+### 6.1 Grouping
+
+`group_credentials(findings, states, first_seen=None)` groups findings by `credential_key` (the fingerprint, or the legacy stand-in) and returns one record per credential:
+
+| Field | Meaning |
+|---|---|
+| `severity`, `secret_type`, `risk_factors`, `masked_value`, `remediation` | from the most severe, highest-risk occurrence |
+| `risk_score` | max across occurrences |
+| `exposure` | `history_only` if no occurrence is in the current tree, else `working_tree` |
+| `locations`, `location_count` | distinct (file, line, in_history, commit) tuples |
+| `first_seen` | earliest of the first completed scan containing it and the earliest `introduced_at` |
+| `exposure_days`, `commits_affected`, `authors_count` | max across occurrences |
+| `status`, `stored_status`, `review_overdue`, `review_by`, `note`, `triaged_at` | from `credential_states` via `effective_status()` |
+| `rotation_url` | from the pattern |
+
+Credentials sort by status (open first), then severity, then risk.
+
+### 6.2 Triage
+
+- **Statuses.** `open` is the default when there's no row; then `rotated`, `false_positive`, and `accepted_risk`.
+- **Waivers expire.** `accepted_risk` *requires* `review_by`, which must be in the future and at most 366 days out (`TriageRequest` validator, converted to naive UTC). Once it passes, `effective_status()` reports `open` with `review_overdue: true`, while `stored_status` still shows the original decision. For other statuses, `review_by` is cleared.
+- **Endpoint.** `PUT /projects/{owner}/{repo}/credentials/{fingerprint}`:
+  1. rejects a malformed fingerprint (`422`, regex `^[0-9a-fl][0-9a-f]{31}$`);
+  2. looks the credential up among the project's completed-scan findings with an indexed query on `fingerprint`, or for an `l…` legacy key, among rows without a fingerprint; `404` if absent, so state can't be planted for credentials a project never produced;
+  3. upserts the `credential_states` row, retrying as an update if a concurrent first decision wins the unique-constraint race.
+
+### 6.3 Project views
+
+- **Projects** are distinct `github` `source_ref`s matching `https://github.com/{owner}/{repo}`. Pastes are never projects.
+- **`project_inventory()`** returns the latest completed scan's credentials, with `first_seen` (which walks every scan of the project, selecting only five columns).
+- **`project_overview()`** and **`exposure_totals()`** skip `first_seen`, because counts don't depend on it. This matters: `/stats` is polled every 15 s by the top bar and Overview.
+- **`project_trend()`** gives up to 30 completed scans, oldest first, with `credentials`, `open`, `critical_open`, `new`, and `removed`. Triage is applied with today's decisions, so the trend reflects current understanding.
+
+### 6.4 Diff and alerts
+
+- **`GET /scans/{id}/diff`** compares credential sets with the previous completed scan of the same source. A key that moved files is *unchanged*. New and resolved lists are sorted by risk.
+- **`new_open_critical(db, scan)`** returns CRITICAL credentials in this scan that are **absent from the previous completed scan** and **not triaged**. Email alerts fire only for these. A credential that disappears and later reappears counts as new again.
+
+---
+
+## 7. REST API reference
+
+All `/api/v1` routers are mounted with `dependencies=[Depends(require_access)]` (§8). `/health` is public. Swagger UI is at `/docs`.
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/v1/scans` | `202`. Rate limit (per IP) + concurrency cap. Body `StartScanRequest` |
+| `GET` | `/api/v1/scans?limit&offset` | Scan list (no findings, no `error_message`) |
+| `GET` | `/api/v1/scans/{id}` | Scan + findings |
+| `GET` | `/api/v1/scans/{id}/findings?severity&secret_type&limit&offset` | Findings |
+| `GET` | `/api/v1/scans/{id}/diff` | Credential-level diff |
+| `DELETE` | `/api/v1/scans/{id}` | `204`, cascades findings |
+| `WS` | `/api/v1/scans/ws/{id}` | Progress events (§10) |
+| `GET` | `/api/v1/projects` | Projects with summaries, most urgent first |
+| `GET` | `/api/v1/projects/{owner}/{repo}` | Overview + trend; `404` if never scanned |
+| `GET` | `/api/v1/projects/{owner}/{repo}/credentials?status&severity&exposure` | The ledger |
+| `PUT` | `/api/v1/projects/{owner}/{repo}/credentials/{fingerprint}` | Body `{status, note?, review_by?}` |
+| `GET` | `/api/v1/export/{id}/json`, `/csv`, `/sarif`, `/patch` | Downloads (`Content-Disposition`) |
+| `GET` | `/api/v1/export/{id}/remediation` | Structured remediation JSON |
+| `GET` | `/api/v1/stats` | Raw totals + `exposure` (deduplicated, net of triage) |
+| `POST` | `/api/v1/schedules` | `201`; `409` beyond `MAX_SCHEDULES` |
+| `GET` | `/api/v1/schedules`, `/schedules/{id}` | List / get |
+| `PATCH` | `/api/v1/schedules/{id}/toggle` | Pause/resume |
+| `DELETE` | `/api/v1/schedules/{id}` | `204` |
+| `GET` | `/health` | `{status, version, auth_required, demo}` |
+
+**Validation highlights (`schemas.py`):**
+- GitHub URLs must match `https://github.com/{owner}/{repo}` and are normalized: a trailing `.git` or `/` is removed, giving at most ~160 characters.
+- Pastes are at most 512 KB; `max_commits` is 1–1000 and `min_entropy` 0–8.
+- Schedules accept GitHub only. Cron is parsed by APScheduler's `CronTrigger`, so bad fields get `422`, and anything running more often than every 15 minutes is rejected.
+- Triage notes are at most 2,000 characters.
+
+**Error shapes:** `401` (`WWW-Authenticate: Bearer`), `404`, `409`, `422` (Pydantic detail array), `429` (`Retry-After` header, human-readable `detail`).
+
+---
+
+## 8. Authentication and private mode
+
+`security.py` defines the access check:
+
+- **`ACCESS_TOKEN` unset: demo mode.** `require_access` is a no-op and every endpoint is public, protected only by §9.
+- **`ACCESS_TOKEN` set: private workspace.** Every `/api/v1` request must present the token:
+  - HTTP: `Authorization: Bearer <token>`.
+  - WebSocket: browsers can't set headers on a handshake, so the client offers subprotocols `cipherwatch.v1, bearer.<token>`. The server reads the `bearer.` entry and, once authorized, accepts with `cipherwatch.v1` (a browser drops the connection unless the server selects one of the offered protocols). A query parameter would also work, but it would be written to uvicorn's and every proxy's access log. A failed check is denied with an HTTP `401` before the socket is accepted (tested at the ASGI level).
+  - Comparison uses `hmac.compare_digest`.
+- **`/health` stays public** and reports `auth_required`, so the console knows whether to show its unlock screen.
+
+**Console flow.**
+1. `<Gate>` waits for `/health`; if `auth_required` and no token is stored, it shows the unlock screen.
+2. The token is checked with `GET /api/v1/stats` before being stored: in `sessionStorage` by default, or `localStorage` if "Remember on this device" is ticked.
+3. An axios request interceptor adds the header, and any `401` response clears the token and relocks.
+4. "Lock" in the top bar forgets the token.
+5. Exports download through axios as blobs, since a plain `<a href>` can't carry the header.
+
+**Scope.** This is one shared secret per deployment: there are no users, roles, or per-user audit trail. Generate it with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+
+---
+
+## 9. Abuse limits
+
+| Limit | Default | Behaviour |
+|---|---|---|
+| Scan creation rate | 10 per 600 s per client IP (`SCAN_RATE_LIMIT`, `SCAN_RATE_WINDOW_SECONDS`) | `SlidingWindowLimiter`; `429` + `Retry-After`; message like "Try again in 10 min" |
+| Concurrent scans | 3 queued/running (`MAX_CONCURRENT_SCANS`) | `429` + `Retry-After: 60`. Check-then-insert, so a simultaneous burst can briefly exceed it (soft cap) |
+| Schedules | 25 (`MAX_SCHEDULES`) | `409` |
+| Paste size | 512 KB | `422` |
+| Repository archive | 100 MB download, 500 MB uncompressed, 50,000 members | Scan fails with a clear message |
+| Scanned file size | 5 MB | Larger files are skipped |
+
+- **Client IP.** `client_ip()` uses the socket peer unless `TRUSTED_PROXY_HOPS > 0`. Then it takes the entry that many positions from the **right** of `X-Forwarded-For`, which is the last address a trusted proxy appended, so anything a client prepends is ignored (tested).
+- **Memory.** The limiter tracks at most 10,000 clients, evicting idle ones.
+- **Per-process state.** Limits are in-process: they reset on restart and aren't shared between instances.
+
+---
+
+## 10. Real-time progress (WebSocket)
+
+`/api/v1/scans/ws/{scan_id}` is push-only. The server broadcasts JSON events and reads only to notice disconnects:
+
 ```json
 {"event": "started", "progress": 0}
 {"event": "progress", "progress": 20, "message": "Extracted repository"}
 {"event": "completed", "progress": 100, "total_findings": 7, "files_scanned": 312}
-{"event": "failed", "error": "Invalid GitHub URL: ..."}
+{"event": "failed", "error": "…"}
 ```
 
-**Frontend side** — `useWebSocket.ts` opens exactly one socket per active `scanId`, using a `useEffect` whose cleanup function (`return () => ws.close()`) guarantees the socket is torn down whenever the component unmounts or `scanId` changes, so no scan ever leaks an open connection. It determines the WebSocket URL from the same `VITE_API_URL` environment variable the REST client uses, converting `https://` → `wss://` (`API_BASE_URL.replace(/^http/, 'ws')`).
+- **Registry.** `_ws_registry` maps a scan ID to its open sockets and is pruned on disconnect and when the scan ends. It is per-process, so a multi-instance deployment would need shared pub/sub.
+- **Client.** `useWebSocket` opens one socket per active scan (sending the token as a subprotocol in private mode) and closes it on unmount.
+- **Fallback.** Fast scans can finish before the socket connects, so `NewScan` also polls `GET /scans/{id}` every 1.5 s. A single `settle` handler, guarded by `finishedRef`, ensures exactly one navigation, whichever channel reports the terminal state first.
+- **Design note.** Because the channel is one-directional, Server-Sent Events would be a leaner fit; WebSocket is what was built, and it works through nginx (verified).
 
 ---
 
-## 11. Background Jobs: Scheduling & Email Alerts
+## 11. Background work: scans, schedules, alerts
 
-### 11.1 Two distinct kinds of "background" in this codebase
+### 11.1 Scans
 
-1. **FastAPI `BackgroundTasks`** — used for running an individual scan (`_run_scan`). This is *request-scoped*: `POST /scans` schedules `_run_scan` to run after the response is sent, on the same event loop, in the same process. It is not a durable job queue — if the server process restarts mid-scan, that scan is lost. At startup, `mark_interrupted_scans()` marks any scan still `queued`/`running` as `failed` with a "run it again" message, so nothing is left reporting `running` forever — but the work is not retried (see §23). CPU-bound scanning runs in a worker thread (`asyncio.to_thread`), so a long scan no longer freezes the event loop for other requests.
-2. **APScheduler `AsyncIOScheduler`** — used for *recurring* scans on a cron schedule, independent of any single HTTP request.
+`POST /scans` inserts a `queued` row and schedules `_run_scan()` as a FastAPI `BackgroundTask`.
+- **Off the event loop.** CPU and disk work runs in `asyncio.to_thread`: extraction, the directory scan, and the history walk. The measured worst event-loop stall dropped from 21 s to about 25 ms on a history scan of `pallets/flask` (v2.1 measurement).
+- **Not durable.** At startup, `mark_interrupted_scans()` marks leftover `queued`/`running` scans `failed`. They aren't retried.
+- **Alert evaluation** runs after the scan is saved as completed, inside a `try` block, so an alerting error can't mark a completed scan failed.
 
-### 11.2 How a schedule becomes a recurring job
+### 11.2 Schedules
 
-`workers/scheduler.py` holds one module-level `_scheduler = AsyncIOScheduler()` instance, started once in `main.py`'s lifespan (`start_scheduler()`) and shut down on process exit (`stop_scheduler()`).
+- **Scheduler.** `workers/scheduler.py` uses one `AsyncIOScheduler(timezone=utc)`, and `CronTrigger`s are pinned to UTC.
+- **Restart-safe.** The job store is in memory, so `restore_schedules()` re-registers every stored schedule at startup, pausing disabled ones so they can be resumed later.
+- **Shared code path.** A fire creates a `Scan` and calls the same `_run_scan()` a manual scan uses.
+- **UTC normalization.** `_next_run_time()` converts APScheduler's timezone-aware datetimes to naive UTC. Without it, PostgreSQL rejected schedule creation outright; SQLite had silently accepted the value. Found by running the suite on Postgres.
+- **Missed runs.** A fire time that passes while the server is asleep is skipped, not run late.
 
-Because that job store is in memory, `restore_schedules()` runs at every startup and re-registers each stored schedule (pausing the disabled ones, so re-enabling later has a job to resume). Without it, schedules silently stopped after any restart.
+### 11.3 Alerts
 
-`add_schedule(schedule_id, cron_expression, source_type, source_ref)` parses the 5-field cron string (`minute hour day month weekday`) into APScheduler's `CronTrigger`, then registers a job:
-```python
-_scheduler.add_job(
-    _run_scheduled_scan,
-    trigger=CronTrigger(minute=..., hour=..., day=..., month=..., day_of_week=...),
-    id=schedule_id,          # the job's ID IS the ScanSchedule's DB id — keeps them 1:1
-    replace_existing=True,
-    args=[schedule_id, source_type, source_ref],
-)
-```
-When the cron trigger fires (fully independent of any browser tab being open — this is what "unattended" means), `_run_scheduled_scan` creates a new `Scan` row, updates the schedule's `last_run_at`/`last_scan_id`, then calls the very same `_run_scan()` from `routers/scans.py` that a manually-launched scan uses — scheduled and manual scans share 100% of the actual scanning code path.
-
-**A subtle bug that was found and fixed during development:** `job.next_run_time` (an APScheduler `Job` attribute) does not exist on a `Job` object until the scheduler has actually started running — accessing it during, e.g., a test that creates a schedule before the scheduler thread is live throws `AttributeError`. The fix, `_next_run_time(job)`, safely falls back to computing the next fire time directly from the trigger (`job.trigger.get_next_fire_time(None, now)`) if the live attribute isn't available yet.
-
-### 11.3 Email alerts
-
-Covered fully in §8's `notifications.py` entry. The trigger condition, stated precisely because it's easy to misstate: an alert fires whenever a **completed scan's finding set contains at least one `CRITICAL`-severity finding** — `critical = sum(1 for f in findings if f.severity == "CRITICAL"); if critical > 0: ...`. This is a check against the *current* scan's absolute contents, not a delta against the previous scan. Consequently, a recurring schedule that keeps finding the *same* unresolved CRITICAL secret will send an alert **on every single run**, not just the first time it appears — there is no "already alerted, suppress repeat" state tracked anywhere.
+`notifications.send_critical_alert` sends one escaped HTML email via `aiosmtplib`. It does nothing unless `SMTP_USER`, `SMTP_PASSWORD`, and `ALERT_EMAIL` are all set. It fires for the credentials selected by `new_open_critical` (§6.4), labels pastes as "pasted content", and never includes their text. The task handle is kept in a module-level set so it isn't garbage-collected mid-send.
 
 ---
 
-## 12. Frontend: File-by-File Walkthrough
+## 12. The CLI
 
-### `frontend/src/main.tsx`
-**Purpose:** the actual entry point Vite builds from (referenced by `<script type="module" src="/src/main.tsx">` in `index.html`). Creates one `QueryClient` (TanStack Query's cache + fetch orchestrator) with `staleTime: 30_000` (data is considered fresh for 30 seconds before a background refetch is even considered) and `retry: 1` (a failed request is retried once before surfacing an error), wraps `<App />` in `<QueryClientProvider>`, and mounts into the DOM inside `<React.StrictMode>` (a development-only wrapper that intentionally double-invokes certain functions to surface side-effect bugs early — has no effect in production builds).
-
-### `frontend/src/App.tsx`
-**Purpose:** defines client-side routing and fires the backend wake-up ping.
-```tsx
-function useWakeBackend() {
-  useEffect(() => { rootApi.get('/health').catch(() => {}) }, [])
-}
-```
-An empty dependency array `[]` means this effect runs exactly once, immediately after the very first render — the earliest possible moment.
-**Routes** (all nested under a shared `<Layout>` via React Router's parent-route + `<Outlet/>` pattern):
-```tsx
-<Route element={<Layout />}>
-  <Route path="/" element={<Dashboard />} />
-  <Route path="/scan" element={<NewScan />} />
-  <Route path="/history" element={<ScanHistory />} />
-  <Route path="/history/:id" element={<ScanDetail />} />
-  <Route path="/schedules" element={<Schedules />} />
-</Route>
-```
-`:id` is a **route parameter** — React Router extracts it from the URL and `ScanDetail` reads it back via the `useParams<{id: string}>()` hook.
-
-### `frontend/src/api/client.ts`
-**Purpose:** the single file that owns every backend contact point and every TypeScript type describing backend data — the frontend's equivalent of the backend's `schemas.py`. No component ever calls `axios` or `fetch` directly; every API call goes through a named function exported from here (`startScan`, `listScans`, `getStats`, etc.), each returning a typed Promise.
-```ts
-const BASE = import.meta.env.VITE_API_URL ? `${VITE_API_URL}/api/v1` : '/api/v1'
-export const api = axios.create({ baseURL: BASE, headers: {...} })
-```
-**Why this matters:** in local development, `VITE_API_URL` is unset, so `BASE` becomes the relative path `/api/v1`, which Vite's dev-server proxy (`vite.config.ts`'s `server.proxy`) forwards to `localhost:8000` — no CORS issue in dev at all. In production, `VITE_API_URL` is set (via a Vercel environment variable) to the live Render URL, and requests go directly cross-origin, which is why the backend's CORS middleware exists.
-**Every backend Pydantic model has a matching TypeScript interface here** (`Finding`, `Scan`, `Schedule`, `Stats`, `ScanDiff`, `DiffFinding`) — this is a manually-maintained contract, not code-generated from the OpenAPI schema, so a backend field rename requires updating this file by hand.
-
-### `frontend/src/hooks/useWebSocket.ts`
-Covered in [§10](#10-websocket-real-time-progress). Returns `{ lastMessage, connected }`; `lastMessage` is the most recently parsed WS payload (or `null` before any message arrives), overwritten (not appended to a list) on every new message — components only ever care about the *current* state, not the full history of updates.
-
-### `frontend/src/index.css`
-Not styling in the traditional "add colors" sense — this file **is** the design system's implementation, using Tailwind's `@layer components` to define reusable class names (`.btn-primary`, `.field`, `.kicker`, `.ledger-table`) on top of the color/spacing/type tokens declared in `tailwind.config.js`. Covered fully in [§15](#15-the-design-system).
-
----
-
-## 13. Every React Component Explained
-
-### `components/TopBar.tsx`
-**Purpose:** the entire site header/navigation — deliberately built as a single horizontal command bar instead of a traditional collapsible sidebar. **Props:** none (it's mounted once, at the top of the route tree, and reads everything it needs itself). **State/hooks:** `useLocation()` (to highlight the active nav tab) and one `useQuery(['stats'], getStats, {refetchInterval: 15_000})` — this is the *same* query key the Dashboard page also subscribes to, so TanStack Query's cache deduplication means the stats are fetched once and shared, not fetched twice just because two components asked for them. **What it renders:** the product mark (an inline hand-drawn SVG, not an image asset — a filled square with a keyhole cut out via a circle + triangle, `fill="currentColor"`-free so it always matches the ivory text color), three `<NavLink>` workspace tabs, a live "N critical / all clear" indicator (color and pulse-animation driven directly by `stats.critical_count`), and the one primary "New scan" button. **Why a component instead of inlining this in `Layout`:** it has its own data dependency (the stats query) and its own internal logic (active-tab detection); separating it keeps `Layout.tsx` a pure, dependency-free shell.
-
-### `components/Layout.tsx`
-**Purpose:** the page shell every route renders inside. **Props:** none. **Children:** renders `<TopBar/>`, then `<Outlet/>` (React Router's placeholder — whatever the currently-matched child route is gets rendered here), then a footer. **Why it exists as a separate file from `App.tsx`:** `App.tsx` owns *routing decisions* (which URL maps to which page); `Layout.tsx` owns *visual structure* (what wraps every page). Keeping them separate means the router config stays readable as a flat list of routes.
-
-### `components/SeverityBadge.tsx`
-**Purpose:** renders a severity label (`CRITICAL`/`HIGH`/`MEDIUM`/`LOW`) as a small colored tick + tracked-uppercase text, never as color alone (a deliberate accessibility choice — color-blind users, or anyone on a monochrome screen, still get the word). **Props:** `{ severity: Severity }`. **No internal state.** Also exports the shared `SEV_COLOR` map and `SEV_ORDER` array, which several other components (`charts.tsx`, `ScanDetail.tsx`) import to stay visually consistent rather than each defining their own color mapping — this is the **single source of truth** for "what color is CRITICAL."
-
-### `components/StatusBadge.tsx`
-**Purpose:** renders a scan's lifecycle status (`queued`/`running`/`completed`/`failed`) as a colored dot + text, with the `running` state additionally getting a CSS `animate-pulse` class so an in-progress scan visibly "breathes" in any list it appears in.
-
-### `components/RiskBadge.tsx`
-**Purpose:** two related exports. `RiskBadge` is a compact, zero-padded mono readout (`055`, `100`) used inline in list rows. `RiskMeter` is the larger version shown when a finding is expanded — a big numeral plus a **10-segment bar** where `Math.round(score / 10)` segments are filled in the risk-band color and the rest are a neutral gray. **Why a segmented bar instead of a circular gauge or plain progress bar:** it reads at a glance as a discrete "how many out of ten" measurement (closer to a hardware VU meter) rather than implying false continuous precision.
-
-### `components/DiffSummary.tsx`
-**Purpose:** renders the output of `GET /scans/{id}/diff` as a single horizontal ledger — four columns (`new`, `resolved`, `unchanged`, `net`) separated by hairline dividers, with the `net` column's color and label (`improved`/`regressed`/`steady`) computed from the sign of `net_change`. **Props:** `{ diff: ScanDiff }`. Returns an explanatory one-liner instead of the ledger when `diff.has_baseline` is `false`.
-
-### `components/LifecycleTimeline.tsx`
-**Purpose:** visualizes a finding's git-history exposure window as an actual timeline — two dots (introduced / last seen) connected by a dashed line, with the line's total *width* on the page scaled proportionally to `exposure_days` against a 90-day reference window (`Math.min(100, (days / 90) * 100)`, floored at 8% so even a same-day exposure renders a visible span). **Renders nothing (`return null`) if the finding has no lifecycle data** — i.e., for any finding from a scan that didn't include git history, this component silently disappears rather than showing empty/placeholder fields, which is the correct behavior given §7.3's opt-in design.
-
-### `components/charts.tsx`
-Three exports, all custom SVG with **zero charting library dependency** — see [§16](#16-every-dependency-explained) for why that choice was made.
-- **`SeveritySpectrum`** — a single stacked horizontal bar, one segment per severity level present, width proportional to that severity's share of total findings, with a 2px gap between segments and a legend row of swatch+label+count below.
-- **`TrendChart`** — findings-per-day as a **stepped line** (constructed manually via SVG path commands — horizontal run then vertical rise at each data point, deliberately chosen over a smooth curve because it reads as a monitoring/observability tool rather than a marketing chart) with a very low-opacity area fill beneath it, a single baseline (no grid cage), and a mouse-tracked crosshair + tooltip. The hover logic (`onMove`) converts the mouse's pixel X position into SVG viewBox coordinates and finds the nearest data point by absolute distance — a small, self-contained nearest-neighbor search over at most 30 points, so brute-force `O(n)` scanning per mouse-move event is more than fast enough.
-- **`RankedTypes`** — a numbered list of the top secret types by count, each row showing rank, name, a proportional horizontal bar (width relative to the row with the highest count), and the exact count in mono type.
-
-**Why hand-build charts instead of using Recharts, Chart.js, etc.:** covered in [§16](#16-every-dependency-explained) and [§22](#22-design-decisions--trade-offs) — this was a deliberate mid-project removal of a chart library to both control the visual language precisely and cut bundle size.
-
----
-
-## 14. State Management & Data Fetching
-
-**There is no global client-state library** (no Redux, no Zustand, no Context-based store) in this codebase, and that absence is itself a decision worth being able to explain. The application's state falls cleanly into two categories, and each is handled by the tool actually suited to it:
-
-1. **Server state** (anything that lives in the database and could be stale/shared across tabs) — handled entirely by **TanStack Query** (`@tanstack/react-query`).
-2. **Local UI state** (a text input's current value, whether a form panel is expanded, which severity filter is currently selected) — handled by plain React `useState`, scoped to the component that owns it.
-
-**Why TanStack Query instead of `useEffect` + `fetch` + `useState`:** hand-rolling data fetching means re-implementing, per component, all of: loading/error states, request de-duplication (if two components mount at once and both want `/stats`, a naive approach fires two identical requests), caching (navigating back to a page shouldn't always show a blank loading screen while re-fetching data you already had seconds ago), background refetching (`refetchInterval`), and cache invalidation after a mutation. TanStack Query provides all of this via one hook call:
-```ts
-const { data: stats, isLoading } = useQuery({
-  queryKey: ['stats'],
-  queryFn: getStats,
-  refetchInterval: 15_000,
-})
-```
-The **query key** (`['stats']`, or `['scan', id]`, or `['findings', id]`) is the cache identity — any two components anywhere in the tree that call `useQuery` with the same key share the exact same cached data and the exact same in-flight request, automatically. This is why `TopBar` and `Dashboard` both subscribing to `['stats']` costs one network request, not two.
-
-**Mutations and cache invalidation** — every write (`startScan`, `deleteScan`, `createSchedule`, `toggleSchedule`, `deleteSchedule`) is wrapped in `useMutation`, and its `onSuccess` callback calls `queryClient.invalidateQueries({ queryKey: [...] })` to mark related cached data stale, triggering an automatic refetch:
-```ts
-const deleteMut = useMutation({
-  mutationFn: deleteScan,
-  onSuccess: () => qc.invalidateQueries({ queryKey: ['scans'] }),
-})
-```
-This is the mechanism by which deleting a scan on the Scans page makes the list immediately re-render without it — the component never manually removes the item from a local array; it just tells the cache "the list is stale," and the existing `useQuery(['scans'])` subscription refetches and re-renders on its own.
-
-**A genuine race condition found and fixed during development** (see `NewScan.tsx`): the WebSocket-based progress UI assumed the socket would connect *before* the scan finished. For a trivial paste scan, the backend can complete in well under a second — faster than the WebSocket handshake. The fix adds a second, independent `useQuery` that polls `GET /scans/{id}` over plain HTTP every 1.5 seconds *in parallel* with the WebSocket, and a `finishedRef` (a `useRef`, not `useState`, specifically because updating it must not trigger a re-render and must be readable synchronously inside the same tick to prevent a double-navigation race) guards so whichever channel — the socket or the poll — reports completion first "wins," and the second one becomes a no-op.
-
----
-
-## 15. The Design System
-
-The frontend does not use a component library (no shadcn/ui, no MUI, no Bootstrap). Every visual primitive — buttons, badges, tables, form fields — is custom, defined once in `tailwind.config.js` (tokens) and `index.css` (composed utility classes), then reused via Tailwind class names across every page.
-
-**Color** is restricted to a small, purposeful palette declared in `tailwind.config.js`, replacing Tailwind's entire default palette outright (`colors: {transparent, current, ink: {...}, line: {...}, ivory: {...}, sev: {...}, ok}`):
-- **`ink`** — four warm near-black steps (`DEFAULT` canvas, `raised` panels, `overlay` hover states, `inset` wells like code blocks and inputs). Depth comes from these background *steps*, not from bordered boxes or drop shadows.
-- **`ivory`** — four text-opacity steps (`DEFAULT` primary text, `dim` secondary, `mute` tertiary/disabled, `faint` decorative). `mute` (`#888681`) is set to clear WCAG AA's 4.5:1 for normal text on every ink surface (5.22 / 4.91 / 4.56:1 on canvas, raised, and overlay) while staying well below `dim` (7.73:1), so the hierarchy holds; the original value measured only 3.21:1.
-- **`sev`** — the four severity colors (critical/high/medium/low), the **only** place hue is used to carry meaning rather than decoration.
-- **`ok`** — a single green, reserved for "resolved"/"clean"/success states.
-
-**Typography** pairs **Instrument Sans** (UI text — labels, prose, buttons) with **IBM Plex Mono** (every number, file path, commit hash, and timestamp — set via a `.font-mono` utility and used pervasively via `tabular-nums` so columns of numbers align digit-for-digit). A small tracked-uppercase "kicker" class (`.kicker`) is used throughout as a section label convention (e.g., "SEVERITY DISTRIBUTION" above a chart).
-
-**Structure favors hairlines over cards.** Sections are separated by a `.rule` class (a single top border) and background-color steps, not individually bordered/shadowed card boxes — this reads closer to a financial ledger or an ops dashboard than a typical "grid of cards" SaaS template.
-
-**Why this was built from scratch rather than adopting an existing kit:** documented at length in the git history of this repository — a full redesign pass was done specifically to move away from generic, templated-looking UI patterns (predictable sidebar, identical bordered KPI cards, default charting-library output, a default blue accent) toward something with a specific, defensible point of view suited to a security-tool domain. This is a legitimate answer to "why not just use shadcn" in an interview: control over the exact visual language, and the practical side-effect of zero component-library bundle weight.
-
----
-
-## 16. Every Dependency, Explained
-
-### Backend (`backend/requirements.txt`)
-
-| Package | Why it's here | Simpler alternative | Trade-off |
-|---|---|---|---|
-| `fastapi` | The web framework — async-native, automatic OpenAPI docs, Pydantic-integrated request/response validation | Flask | Flask is sync-first and needs extra work (or Quart) to be truly async; FastAPI's type-driven validation eliminates a whole class of manual `if` checks |
-| `uvicorn[standard]` | The ASGI server that actually runs the FastAPI app (FastAPI itself is just the framework, not a server) | Hypercorn | Both are solid; uvicorn is the most common pairing with FastAPI |
-| `sqlalchemy` | Async ORM — see §6.1 | Raw SQL via `asyncpg`/`aiosqlite` directly | Raw SQL is faster to write for trivial queries but loses migration tooling, relationship management, and type safety as the schema grows |
-| `aiosqlite` | Async SQLite driver — required because SQLAlchemy's async engine needs an async-capable DB driver | — | SQLite's sync driver (`sqlite3`) cannot be used with an async engine at all |
-| `asyncpg` | Async PostgreSQL driver — present so the *same* async SQLAlchemy code works against Postgres without changes, even though the live deployment currently runs SQLite | `psycopg` (sync) | Only relevant if/when the deployment migrates to Postgres |
-| `pydantic` / `pydantic-settings` | Data validation (request/response schemas) and typed environment-variable loading | Manual `os.environ.get()` + hand-written validation | Pydantic gives free, declarative validation with clear error messages instead of scattered manual checks |
-| `GitPython` | Wraps the `git` CLI in a Python API — used to clone repos and walk commit history | Shelling out to `git` directly with `subprocess` | GitPython gives a typed, Pythonic interface (`repo.iter_commits()`, `commit.tree.traverse()`) instead of parsing CLI text output |
-| `httpx` | Async HTTP client — used to call the GitHub zipball download API | `requests` (sync) or `aiohttp` | `requests` would block the event loop; httpx has a near-identical API to `requests` but is async-native |
-| `apscheduler` | Cron-style recurring job scheduling inside the same process | A separate task queue (Celery + Redis) | APScheduler needs no extra infrastructure (no Redis/broker) at the cost of being in-memory and single-process only (see §11's scaling note) |
-| `aiosmtplib` | Async SMTP client for email alerts | `smtplib` (sync, stdlib) | Same async-event-loop reasoning as `httpx` |
-| `websockets` | The underlying WebSocket protocol implementation uvicorn uses | — | Required dependency for `uvicorn[standard]`'s WS support |
-| `python-multipart` | Enables FastAPI to parse `multipart/form-data` request bodies | — | Present for completeness/future file-upload support; not currently exercised by any route in this codebase |
-| `greenlet` | Required by SQLAlchemy's async engine internals on newer Python versions | — | Transitive necessity, not a direct architectural choice |
-
-### Frontend (`frontend/package.json`)
-
-| Package | Why it's here | Simpler alternative | Trade-off |
-|---|---|---|---|
-| `react` / `react-dom` | The UI library | Vue, Svelte | React was chosen; component model + hooks fit this app's needs well |
-| `react-router-dom` | Client-side routing (URL ↔ page mapping) without a full page reload | Hand-rolled `window.location` switching | Router gives declarative routes, nested layouts (`<Outlet/>`), and typed route params (`useParams`) |
-| `@tanstack/react-query` | Server-state fetching/caching — see §14 | Manual `useEffect` + `fetch` + `useState` | Query eliminates enormous amounts of boilerplate (loading/error/cache/dedup/invalidation) that would otherwise be hand-written per component |
-| `axios` | HTTP client | The native `fetch()` API | Axios auto-parses JSON, has cleaner error objects (`isAxiosError`), and supports request/response interceptors and a pre-configured base instance more ergonomically than raw `fetch` |
-| `date-fns` | Date formatting (`format(date, 'MMM d, HH:mm')`) | Native `Intl.DateTimeFormat` or `Date` methods | `date-fns` gives a much more ergonomic, composable formatting API; it's tree-shakeable so only the functions actually imported end up in the bundle |
-| `clsx` | Conditionally joining CSS class name strings | Manual template-string concatenation | `clsx` handles falsy values and objects cleanly (`clsx('a', cond && 'b', {c: true})`) with near-zero runtime cost |
-| `typescript` | Static typing for the entire frontend | Plain JavaScript | Catches an entire category of bugs (wrong prop shape, typo'd field name) at build time instead of at runtime |
-| `vite` | Build tool + dev server | Create React App (deprecated), webpack directly | Vite's dev server uses native ES modules for near-instant hot reload; its production build (via Rollup) is what powers the manual chunk-splitting in `vite.config.ts` |
-| `tailwindcss` | Utility-first CSS, and the mechanism the entire design system's tokens are defined through | Hand-written CSS/SCSS, styled-components | Tailwind's config file *is* the design-token system (§15); utility classes avoid the "what do I name this class" problem entirely |
-
-**Notably absent, and why:** `recharts` (or any charting library) and `lucide-react` (or any icon library) were both **deliberately removed** partway through the project's life. Charts were rebuilt as custom SVG (§13); icons were replaced with typographic/geometric alternatives (dots, ticks, mono-text glyphs) consistent with the design system. This single change reduced the production JavaScript bundle from a single ~734 KB chunk down to a 42 KB app-shell entry chunk plus two independently-cacheable vendor chunks (react ~156 KB, data/query ~117 KB) — verified by comparing `npm run build` output before and after.
-
----
-
-## 17. Configuration Files Explained
-
-### `frontend/vite.config.ts`
-```ts
-export default defineConfig({
-  plugins: [react()],
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          react: ['react', 'react-dom', 'react-router-dom'],
-          data: ['@tanstack/react-query', 'axios', 'date-fns'],
-        },
-      },
-    },
-  },
-  server: { port: 5173, proxy: { '/api': { target: 'http://localhost:8000', changeOrigin: true } } },
-})
-```
-`manualChunks` explicitly splits vendor code into two cacheable groups separate from the application's own code — this means a deploy that only changes application logic doesn't force browsers to re-download React itself, since the `react-*.js` chunk's content hash (and therefore its cache key) is unchanged. `server.proxy` is what makes local development CORS-free (§12).
-
-### `frontend/tailwind.config.js`
-Not a typical Tailwind config — it fully replaces the default `colors` object rather than `extend`-ing it, which is deliberate: it means **no other color is reachable** by autocomplete or by accident, forcing every visual decision through the small, intentional palette described in §15.
-
-### `frontend/tsconfig.json`
-Key settings: `"strict": true` (enables all of TypeScript's strictest type-checking flags — no implicit `any`, strict null checks, etc.); `"types": ["vite/client"]` (this is what makes `import.meta.env.VITE_API_URL` type-check correctly — without it, TypeScript has no idea `import.meta.env` exists, since that's a Vite-specific runtime addition, not a browser/Node standard); `"noEmit": true` (TypeScript here is used purely for type-checking — Vite/esbuild, not `tsc`, does the actual JS output, so `tsc` never needs to write files, only report errors).
-
-### `backend/pytest.ini`
-```ini
-[pytest]
-asyncio_mode = auto
-testpaths = tests
-```
-`asyncio_mode = auto` means every `async def test_...` function in the suite is automatically treated as an async test (via `pytest-asyncio`) without needing an `@pytest.mark.asyncio` decorator on each one individually.
-
-### `render.yaml`
-Render's **infrastructure-as-code** blueprint for the backend service — `rootDir: backend` scopes the build to that subdirectory, `buildCommand`/`startCommand` define exactly what runs at deploy time (`python seed_demo.py && uvicorn ...` — the seed script runs once per deploy, is idempotent, then the server starts), and `envVars` declares the full set of environment variables the service needs, with `sync: false` on anything secret (API tokens, SMTP password) meaning "must be set manually in Render's dashboard, never committed to this file."
-
-### `.github/workflows/ci.yml`
-Four independent jobs run on every push to `main` and every pull request:
-1. **`backend`** — installs `requirements-dev.txt`, runs `pytest tests/ -v` (the 76 API-integration, unit, and hardening-regression tests).
-2. **`scanner-cli`** — installs root `requirements.txt`, runs `pytest test_scanner.py -v` (the 19 legacy-CLI tests) — kept as a genuinely separate job because it exercises a different, older code path (`scanner_core.py`) than the FastAPI backend does.
-3. **`frontend`** — `npm ci && npm run build`, which runs `tsc` (type-check) then `vite build` — this job fails on either a TypeScript error or a build failure, catching type regressions before they reach production.
-4. **`self-scan`** (the "dogfood" job) — runs the project's own CLI scanner against its own source tree and uploads the JSON report as a build artifact. Set to `continue-on-error: true` deliberately, because the repository's own test fixtures intentionally contain fake secret-like strings (used to test the detector) — a failing self-scan is expected and not a CI failure condition; the point is to keep a visible, downloadable audit trail, not to gate merges on it.
-
----
-
-## 18. Deployment Architecture
-
-```text
-┌─────────────────────┐        ┌──────────────────────────┐
-│  Vercel               │  HTTPS │  Render                    │
-│  (frontend, static)    │◄──────►│  (backend, uvicorn process)│
-│  cipherwatch-web        │        │  secrets-scanner-api        │
-│  .vercel.app              │        │  .onrender.com                │
-└─────────────────────┘        └───────────┬──────────────┘
-                                             │
-                                    ┌────────▼────────┐
-                                    │  SQLite file      │
-                                    │  (on Render's       │
-                                    │   ephemeral disk)     │
-                                    └──────────────────────┘
+```bash
+python cli.py scan PATH [--history] [--max-commits N] [--min-entropy X]
+                        [--format text|json|sarif] [-o FILE] [--sarif FILE]
+                        [--baseline FILE] [--fail-on critical|high|medium|low|none]
+python cli.py baseline PATH [--history] [-o .cipherwatch-baseline.json]
 ```
 
-**Frontend → Vercel.** `frontend/vercel.json` (not shown above but present in the repo) configures the build; Vercel builds via `npm run build`, then serves the static `dist/` output from its global CDN. The `VITE_API_URL` environment variable (pointing at the Render backend) is injected **at build time**, since Vite bakes `import.meta.env.*` values into the compiled JS bundle — this is why changing that variable requires a redeploy, not just a config toggle.
+- **Dependencies.** `cli.py` adds `backend/` to `sys.path` and calls `app.cli.main`, which imports only the scanner package. It needs Python 3.11+, GitPython, and the `git` binary for `--history`; no server, database, or FastAPI.
+- **Exit codes.** `0` means no new credential at or above `--fail-on` (default `low`), `1` means at least one, and `2` means a usage or I/O error (missing path, unsupported baseline version, key mismatch).
+- **Output.**
+  - `text`: a summary line, then one row per credential, tagged `NEW` or `base`.
+  - `json`: one entry per credential, with `baselined`.
+  - `sarif`: only credentials not in the baseline.
+  - `--sarif FILE`: writes SARIF *alongside* any format, so CI scans once.
+- **Baseline v1.**
 
-**Backend → Render, free tier.** Render's free web-service tier **spins the process down after 15 minutes of no traffic** and cold-starts it (30–60 seconds) on the next request — this is the entire reason the frontend's wake-up ping (§5, Step 1) exists. Render's free tier also uses **ephemeral disk** for services without an attached persistent disk — meaning the SQLite file is **not guaranteed to survive a redeploy**, which is precisely why `seed_demo.py` re-runs (idempotently) on every deploy, ensuring the demo dataset is always present rather than assuming prior data persisted.
+  ```json
+  {"version": 1, "key_id": "36e1268d47c0", "generated_at": "…", "note": "…",
+   "credentials": [{"fingerprint": "…", "secret_type": "…", "file_path": "…"}]}
+  ```
 
-**CORS is the mechanism that makes cross-origin communication (Vercel's domain calling Render's domain) work at all** — covered in depth in [§20](#20-concept-deep-dives).
-
-**Local development** uses Vite's dev-server proxy (frontend) talking directly to a locally-run `uvicorn` process (backend) — no Vercel, no Render, no CORS concerns, and typically SQLite (though `docker-compose.yml` offers a full Postgres-backed alternative for closer-to-production local testing).
-
----
-
-## 19. Testing Strategy
-
-**95 automated tests total, split across two independent suites, both run in CI on every push.** Backend line coverage is 77% (100% on risk scoring, SARIF, and stats).
-
-### Backend suite — 76 tests (`backend/tests/`, run via `pytest tests/ -v`)
-- **`test_api.py`** — full HTTP integration tests against the live FastAPI app, using `httpx.AsyncClient` wired to an `ASGITransport` (meaning requests never leave the process — no real network socket, no real server process, but the *entire* FastAPI request/response/middleware/dependency-injection stack genuinely executes). `conftest.py`'s `client` fixture creates a fresh, isolated throwaway SQLite database **per test** (`Base.metadata.drop_all` then `init_db()` inside the fixture) — so tests never interfere with each other's data and never touch the real development or production database. Covers the full paste-scan lifecycle end-to-end: start a scan → poll until findings exist → filter by severity → request a diff → export in all four formats → check dashboard stats → delete → confirm 404.
-- **`test_risk.py`** — pure unit tests of `compute_risk_score()`: every severity base value, every bonus rule in isolation, the 100-point cap, and that every point added is accompanied by a factor string.
-- **`test_sarif.py`** — validates the SARIF document's structure: correct schema/version strings, one rule per distinct secret type (not per finding), correct severity→level mapping, correct fingerprints, and a well-formed empty document when there are zero findings.
-- **`test_remediation.py`** — env-var-name derivation (both the "infer from source line" and "fall back to the type map" paths), per-language replacement-line generation for Python/Node/Ruby/Go/PHP/`.env`, and patch-file hunk grouping/ordering.
-- **`test_validation.py`** — the input-hardening rules from `schemas.py`: rejecting non-GitHub URLs, rejecting oversized pastes, rejecting malformed cron expressions, and confirming pagination `limit`/`offset` bounds are enforced.
-- **`test_hardening.py`** — regression tests for the security and reliability fixes: no raw secret in any of 8 API responses and exports, pasted content replaced by a stable digest, interrupted scans failed and schedules restored at startup, invalid and too-frequent cron rejected, zip-bomb and member-count limits, the vendor-example placeholder, and an escaped alert email. Each bug-detecting test was confirmed to **fail against the pre-fix code** (15 of 20; the other 5 are guard cases checking that valid input still works).
-
-### Legacy CLI suite — 19 tests (`test_scanner.py`, run via `pytest test_scanner.py -v`)
-Tests `scanner_core.py` (the original, pre-web-app scanning engine that `cli.py` still uses) — AWS/GitHub/JWT/SSH-key detection, placeholder suppression, entropy-threshold gating, and statistics generation.
-
-**Why two separate suites instead of one:** `scanner_core.py` and `backend/app/scanner/core.py` are two genuinely different implementations (the backend's is the actively-developed, feature-rich engine; the CLI's is the original, simpler one kept for `cli.py`'s standalone offline use case) — testing them separately, in separate CI jobs, correctly reflects that they are separate code paths, not duplicated coverage of the same code.
+  It contains no secret values (tested), so it's safe to commit. Review the entries and rotate anything real before committing.
+- **Fingerprint key.** `FINGERPRINT_KEY` from the environment, otherwise the public default (§5.6).
+- **Legacy flags.** `-d DIR` / `-f FILE` map to `scan PATH`, `-g REPO` maps to `scan REPO --history`, `--format console` maps to `text`, and `--stats`, `--recursive`, and `--verbose` are ignored.
 
 ---
 
-## 20. Concept Deep-Dives
+## 13. The GitHub Action and CI
 
-### CORS (Cross-Origin Resource Sharing)
-**Simple explanation:** imagine your browser as a cautious mail clerk. By default, a webpage loaded from `site-a.com` is *not allowed* to quietly ask `site-b.com` for private data on your behalf — that would let any malicious website silently read your bank's API just because you happened to have it open in another tab. CORS is the mechanism by which `site-b.com` can explicitly say "it's fine, `site-a.com` is allowed to talk to me."
-**Technical explanation:** the browser enforces the **same-origin policy** — an origin is the combination of scheme + host + port. `https://cipherwatch-web.vercel.app` and `https://secrets-scanner-api.onrender.com` are different origins (different hosts), so by default the browser blocks JavaScript on the former from reading responses from the latter. `CORSMiddleware` in `main.py` makes the server send an `Access-Control-Allow-Origin` response header explicitly whitelisting the frontend's origin (from `settings.cors_origins_list`, parsed from the `CORS_ORIGINS` env var) — only then does the browser permit the frontend's JavaScript to read the response body.
-**In this project:** this is why CORS never comes up in local dev (Vite's proxy makes every request same-origin from the browser's point of view) but is essential in production (Vercel and Render are always different origins).
+### 13.1 `action.yml` (composite)
 
-### JWT (JSON Web Token)
-Not used in this codebase (there is no authentication at all), but worth defining since it's a standard interview topic and directly relevant to §23's discussion of what would need to be added for multi-tenant auth. **Simple explanation:** a JWT is like a wax-sealed letter — anyone can read what's written inside, but the seal proves who wrote it and that nobody tampered with it after sealing. **Technical explanation:** a JWT is three base64url-encoded segments (`header.payload.signature`) — the payload carries claims (e.g. user ID, expiry), and the signature is a cryptographic hash of the header+payload computed with a server-held secret, so any change to the payload invalidates the signature. This project has no JWTs because it has no user identity to attach one to; adding authentication would mean introducing a `users` table, a login endpoint that issues a JWT, and a FastAPI dependency (analogous to `get_db`) that validates the token and scopes every query to the authenticated user.
+| Input | Default |
+|---|---|
+| `path` | `.` |
+| `fail-on` | `high` |
+| `baseline` | `.cipherwatch-baseline.json` (used only if the file exists) |
+| `history` | `"false"` (needs `actions/checkout` with `fetch-depth: 0`) |
+| `max-commits` | `100` |
+| `sarif-file` | `cipherwatch.sarif` (also an output) |
 
-### Async / Await
-Covered concretely in §6.1. General definition: `async`/`await` is Python's syntax for **cooperative multitasking** — a coroutine voluntarily yields control at each `await` point, letting the event loop run other pending work during I/O waits, rather than the operating system forcibly context-switching between separate OS threads (as with traditional multithreading).
+Steps:
+1. `actions/setup-python@v5` with `update-environment: false`. The action gets its own Python 3.11 and doesn't change `PATH` for the caller's later steps.
+2. Create a virtualenv in `$RUNNER_TEMP` and install `GitPython>=3.1.40,<4`.
+3. One scan: a masked summary in the log, SARIF on disk, and the exit code as the gate.
 
-### REST
-**Simple explanation:** a shared set of conventions so that "get a thing," "create a thing," "change a thing," and "delete a thing" always look the same shape, no matter which API you're talking to — instead of every service inventing its own verbs.
-**Technical explanation, as applied in this codebase:** resources are nouns in the URL path (`/scans`, `/scans/{id}/findings`, `/schedules`), and the HTTP method carries the verb (`GET` read, `POST` create, `PATCH` partial update, `DELETE` remove). Status codes carry outcome semantics: `202 Accepted` for the async scan-creation endpoint (work has been *accepted*, not yet *completed*), `204 No Content` for successful deletes (nothing meaningful to return), `404` for a missing resource, `422` for a validation failure.
+**Script-injection safety.** Inputs are passed through `env:` and referenced as `"$CW_…"`, never as `${{ inputs.… }}` inside `run:`.
 
-### WebSocket vs. SSE vs. Polling
-Covered concretely in §10, including the honest note that this project's WebSocket usage is functionally one-directional. General comparison: **polling** (client repeatedly asks "anything new?") is simplest but wastes requests and adds latency up to the poll interval. **SSE** is a one-directional, auto-reconnecting, plain-HTTP server→client push channel — ideal when only the server needs to speak. **WebSocket** is a full bidirectional channel — necessary only when the client also needs to send messages back over the *same* open connection (e.g. a chat app, or a genuine cancel/pause control channel), which this project's scan-progress feature does not actually do.
+**Runners.** Linux and macOS only: the private virtualenv is invoked as `$RUNNER_TEMP/cipherwatch-venv/bin/python`, a path that doesn't exist on Windows runners.
 
-### Hydration / SSR / CSR
-Not applicable to this codebase — it is a plain **Client-Side Rendered (CSR)** single-page app (Vite + React, no Next.js, no server-side rendering framework). Definitions for completeness: **CSR** means the server ships a nearly-empty HTML shell and all rendering happens in the browser via JavaScript (what this app does — the initial HTML has an empty `<div id="root">`). **SSR** means the server renders the initial HTML with real content already in it (faster first paint, better for SEO). **Hydration** is the process, in an SSR app, of React "waking up" that server-rendered HTML and attaching event listeners/interactivity to it client-side, without re-rendering from scratch. This project has no hydration step because it never does server rendering in the first place.
+**Verification status.** Both script steps were run locally exactly as written, under `bash -eo pipefail`: a clean tree exits 0 with an empty SARIF, and an injected token exits 1 with one SARIF result. The YAML parses. The action has **not** yet run on a real GitHub runner, since that needs a push.
+
+### 13.2 `.github/workflows/ci.yml`
+
+| Job | What it runs |
+|---|---|
+| `backend` | `pip install -r requirements-dev.txt`, `pytest tests/` (Python 3.11) |
+| `legacy-scanner` | Root `requirements.txt`, `pytest test_scanner.py` |
+| `frontend` | `npm ci`, `npm run lint` (zero warnings allowed), `npm run build` (tsc + vite) |
+| `self-scan` | `uses: ./` with `fail-on: high` against `.cipherwatch-baseline.json`; SARIF uploaded to code scanning on pushes |
+
+The repository's own baseline records its 45 deliberate fixtures (test inputs, demo files, pattern definitions), so `self-scan` fails only when a new credential appears. Regenerate it from a clean copy of tracked files when fixtures change on purpose (§19).
 
 ---
 
-## 21. Full Feature Traces (User Action → Screen)
+## 14. The console (frontend)
 
-### 21.1 Launching a scan — the complete trace
+### 14.1 Routes
 
-```text
-User fills the New Scan form, selects "Pasted code", pastes text, clicks "Run scan"
-        │
-        ▼
-NewScan.tsx  handleSubmit(e)
-        │  e.preventDefault()
-        │  builds { source_type: 'paste', source_ref: <text>, scan_git_history: false,
-        │           max_commits: 100, min_entropy: 3.5 }
-        ▼
-mutation.mutate(body)   — TanStack Query's useMutation, wrapping startScan()
-        │
-        ▼
-api/client.ts  startScan()  →  axios POST /api/v1/scans
-        │
-        ▼  (network hop, browser → Render)
-routers/scans.py  start_scan(body, background_tasks, db)
-        │  Pydantic validates `body` against StartScanRequest
-        │  (paste-size check, non-empty check — all pass)
-        │
-        ▼
-        new Scan(source_type='paste', source_ref=paste_label(text), status 'queued')
-        db.add(scan); await db.flush(); await db.refresh(scan); await db.commit()
-        │  → INSERT INTO scans (...) — row now exists, status='queued'
-        │
-        ▼
-        background_tasks.add_task(_run_scan, scan.id, text)   ← content in memory only
-        return scan   — HTTP 202, body = ScanListItem JSON
-        │
-        ▼  (response returns to browser)
-mutation.onSuccess(data)
-        │  finishedRef.current = false
-        │  setActiveScanId(data.id)      ← triggers useWebSocket(activeScanId) to connect
-        │  setScanProgress(0)
-        │
-        ├──────────────────────────────────────┐
-        ▼ (in parallel, back on the server)     ▼ (in the browser)
-_run_scan(scan_id) begins running                useWebSocket opens a WS connection to
-   scan.status = 'running'; commit               /api/v1/scans/ws/<id>
-   _broadcast({event:'started', progress:0})     scan_websocket() accepts it, registers
-   to_thread(scan_text, text, 'paste', …)         it in _ws_registry[scan_id]
-     → for each non-comment line, run all 26
-       regex patterns, filter placeholders,
-       apply entropy gate, downgrade severity
-       for test files, compute_risk_score(),
-       mask every secret in the stored context
-   _broadcast({event:'progress', progress:80})  →  onmessage fires, setScanProgress(80)
-   for each Finding: db.add(FindingModel(...))
-   scan.status='completed'; total_findings=N
-   scan.completed_at = utcnow_naive(); commit
-   _broadcast({event:'completed', progress:100,
-               total_findings:N, files_scanned:1}) →  onmessage fires:
-                                                        finish(activeScanId) called
-   if any CRITICAL finding:                              → qc.invalidateQueries(['scans'])
-     asyncio.create_task(send_critical_alert(...))          qc.invalidateQueries(['stats'])
-                                                              setScanProgress(100)
-                                                              setTimeout 600ms →
-                                                              navigate(`/history/${scanId}`)
-        │
-        ▼
-(Fallback path, running the whole time in parallel: a useQuery polling
- GET /scans/{id} every 1.5s also observes status flip to 'completed' and
- calls the SAME finish() function — a `finishedRef` guard ensures whichever
- of {WebSocket, poll} notices completion first is the one that navigates;
- the second is a no-op.)
-        │
-        ▼
-Browser navigates to /history/<id>
-        │
-        ▼
-ScanDetail.tsx mounts, useQuery(['scan', id]) fires GET /scans/{id},
-useQuery(['findings', id]) fires GET /scans/{id}/findings,
-useQuery(['diff', id]) fires GET /scans/{id}/diff
-        │
-        ▼
-Full scan report renders: header, meta line, diff summary (if a baseline
-exists), severity filter strip, findings grouped by file with expandable
-rows showing risk meter, contributing factors, lifecycle (if present),
-matched string, entropy, remediation steps.
+| Path | Page | Notes |
+|---|---|---|
+| `/` | `Landing` | Public; explains the product, CI usage, and principles; CTA into the console |
+| `/overview` | `Dashboard` | Open credentials, critical open, history-only, overdue reviews, projects; severity spectrum; needs-attention list; raw detections per day; top types; recent scans |
+| `/projects` | `Projects` | Table sorted by urgency |
+| `/projects/:owner/:repo` | `ProjectDetail` | The ledger: stats, overdue banner, trend, status tabs, severity and exposure filters, expandable credentials with facts, locations, risk factors, remediation, rotation link, and `TriageForm`; rescan; `404` shows "not scanned" |
+| `/scan` | `NewScan` | GitHub or paste; history, depth, and entropy options; progress; public-workspace notice; rate-limit messages |
+| `/history`, `/history/:id` | `ScanHistory`, `ScanDetail` | Scan list and report (diff, findings by file, exports, link to the ledger) |
+| `/schedules` | `Schedules` | Create, pause, delete; cron presets; UTC |
+| `*` | `EmptyState` | Not found |
+
+Everything except `/` is wrapped in `<Gate><Layout/></Gate>`. `/dashboard` redirects to `/overview`.
+
+### 14.2 Data layer
+
+- **`api/client.ts`.** An axios instance at `${VITE_API_URL}/api/v1` (relative in dev, where Vite proxies `/api` and `/health` to `:8000`), plus the auth interceptor, typed API functions, and these helpers:
+  - `apiErrorMessage` turns FastAPI `detail`, 429 waits, network errors, and 5xx into sentences.
+  - `parseUtc` marks the API's naive UTC timestamps as UTC before `new Date()`; otherwise browsers would read them as local time.
+  - `downloadExport` fetches with the token and names the file from `Content-Disposition`.
+  - `shortRef` and `projectSlug` shorten and parse GitHub references.
+- **TanStack Query** owns server state. `retry` covers network and 5xx errors up to twice but never 4xx; `staleTime` is 30 s; `/stats` is refetched every 15 s. Mutations invalidate the related keys: triage invalidates `credentials`, `project`, `projects`, and `stats`.
+- **Local UI state** is plain `useState`. The token store (`api/auth.ts`) is a tiny external store read with `useSyncExternalStore`.
+
+### 14.3 UX states and accessibility
+
+- **States.** Shared `ui.tsx` primitives (`PageHeader`, `LoadingRows`, `EmptyState`, `ErrorState`, `InlineError`, `Stat`) give every data view loading, empty, and error states. A 404 project shows a "not scanned" state instead of an error.
+- **Keyboard.** A skip link, visible `:focus-visible` outlines, and real links in table rows, so they work without a mouse. Collapsed panels are `invisible`, which takes them out of the tab order and the accessibility tree. Filters are toggle buttons (`aria-pressed`), and expanders use `aria-expanded`/`aria-controls`.
+- **Announcements.** Status changes use `role="status"` / `aria-live`, and errors use `role="alert"`.
+- **Colour.** Severity is never shown by colour alone, and `ivory-mute` text meets WCAG AA (4.5:1+) on every surface.
+- **Layout.** Checked at 375 px with no horizontal page overflow (wide tables scroll inside their container). Motion is reduced under `prefers-reduced-motion`.
+
+### 14.4 Design system
+
+There is no component library. `tailwind.config.js` *replaces* Tailwind's palette:
+- **Colours:** `ink` surfaces (4 steps), `line` hairlines, `ivory` text (4 steps), `sev` (critical/high/medium/low, the only meaningful hues), and `ok`.
+- **Type:** Instrument Sans for UI text; IBM Plex Mono for every number, path, hash, and timestamp.
+- **Structure:** sections separate with hairline rules and background steps rather than bordered cards.
+- **Charts** are hand-built SVG (`SeveritySpectrum`, a stepped `TrendChart` that measures its container with `ResizeObserver`, `RankedTypes`), so there is no chart-library weight.
+
+---
+
+## 15. Configuration reference
+
+Backend settings (`backend/app/config.py`, read from the environment or `backend/.env`):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DATABASE_URL` | `sqlite+aiosqlite:///./secrets_scanner.db` | `postgresql+asyncpg://…` for Postgres (pool 10 + 20 overflow) |
+| `ACCESS_TOKEN` | empty | Empty = demo mode; set = private workspace |
+| `FINGERPRINT_KEY` | empty | Empty = generated and stored in `app_settings`; set it in production and keep it stable |
+| `SCAN_RATE_LIMIT`, `SCAN_RATE_WINDOW_SECONDS` | `10`, `600` | Per client IP |
+| `MAX_CONCURRENT_SCANS` | `3` | Soft cap |
+| `MAX_SCHEDULES` | `25` | |
+| `TRUSTED_PROXY_HOPS` | `0` | `1` behind exactly one appending proxy |
+| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Comma-separated |
+| `GITHUB_TOKEN` | empty | 60 → 5,000 GitHub API requests/hour |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `ALERT_EMAIL` | `smtp.gmail.com`, `587`, empty… | Alerts are disabled unless user, password, and recipient are set |
+| `BACKEND_URL` | `http://localhost:8000` | Links in emails |
+
+Other variables:
+
+| Variable | Where | Notes |
+|---|---|---|
+| `SEED_DEMO` | `render.yaml` start command | `1` runs `seed_demo.py` before uvicorn |
+| `VITE_API_URL` | console build | API origin when the console is hosted separately; baked in at build time |
+| `TEST_DATABASE_URL` | test suite | Run the backend tests on another database; the name must contain `test` |
+| `FINGERPRINT_KEY` | CLI | Same meaning as on the server |
+
+Annotated template: `backend/.env.example`.
+
+---
+
+## 16. Deployment
+
+All options below cost $0 to run.
+
+### 16.1 Local
+
+See the README quick start. The backend and console run separately; Vite proxies `/api` and `/health`. `python seed_demo.py` adds sample data. It writes nothing if any scan exists or if `ACCESS_TOKEN` is set.
+
+### 16.2 Docker
+
+- **`backend/Dockerfile`:** `python:3.11-slim`, `git` installed, dependencies from `requirements.txt`, and a non-root user (uid 10001). `.dockerignore` keeps `.venv`, local databases, `.env`, coverage files, and tests out of the image.
+- **`docker-compose.yml`:** Postgres 16 (development password, local only), the API (with `--reload` and `./backend` mounted), and the console built and served by nginx on `localhost:5173`. nginx proxies `/api` (with WebSocket upgrade headers) and `/health` to the API.
+
+Verified: the image builds and runs as uid 10001, `/health` answers, a paste scan completes, and a GitHub history scan completes inside the container. The full Compose stack served the SPA (including deep links), `/health`, and the API, and accepted the WebSocket with subprotocol negotiation through nginx, on Postgres.
+
+### 16.3 Render + Vercel (+ Neon)
+
+- **API on Render (free).** `render.yaml` runs `pip install -r requirements.txt`. Its start command is `sh -c 'if [ "$SEED_DEMO" = "1" ]; then python seed_demo.py; fi; exec uvicorn …'`, with `healthCheckPath: /health`. Secrets are `sync: false`, meaning they're set in the dashboard, never committed. The free tier sleeps after about 15 idle minutes; the console's `<Gate>` explains the wait.
+- **Database.** By default, SQLite on Render's ephemeral disk, which resets on every redeploy; that's fine for the public demo, which reseeds. For durable data, use a free **Neon** Postgres via `DATABASE_URL`.
+- **Console on Vercel (free).** Root directory `frontend`, `VITE_API_URL=https://<api>.onrender.com`; `vercel.json` rewrites all paths to `index.html`.
+
+**Private-workspace checklist (Render):**
+1. `ACCESS_TOKEN`: a long random value.
+2. `FINGERPRINT_KEY`: a long random value; never change it afterwards.
+3. `SEED_DEMO=0`. The seeder also refuses on its own when `ACCESS_TOKEN` is set.
+4. `DATABASE_URL`: the Neon `postgresql+asyncpg://…` URL.
+5. `CORS_ORIGINS`: your console origin.
+6. Optional: `GITHUB_TOKEN`, SMTP variables.
+7. After the first deploy, verify `TRUSTED_PROXY_HOPS=1` (see Troubleshooting).
+
+**Unverified:** none of the 3.0 changes have been deployed. The `TRUSTED_PROXY_HOPS=1` assumption (that Render's proxy appends exactly one `X-Forwarded-For` entry), cold-start timing, and Neon connectivity with this release have not been tested live.
+
+---
+
+## 17. Security model
+
+| Threat | Control |
+|---|---|
+| Stored secrets leaking via the API, exports, or logs | Masked `matched_string`; every secret on a line masked in `context`; pastes never persisted (digest label); baselines hold fingerprints only. Tests assert that no raw secret appears in API responses, exports, or baselines. |
+| Fingerprints revealing secrets | HMAC-SHA256 with a per-install key (server). Generic, low-entropy values are never fingerprinted by value. The CLI's default key is public, but value-scoped fingerprints apply only to high-entropy, format-specific credentials. |
+| Unauthorized access to a private workspace | Bearer token on every `/api/v1` route, including the WebSocket; constant-time comparison; `401` before the handshake is accepted. |
+| Token exposure | Never in URLs (WebSocket uses the subprotocol); `sessionStorage` by default; the console sends it only to the API origin. |
+| Abuse of the public demo | Rate limit, concurrency cap, schedule cap, paste/archive/file-size caps, a 15-minute minimum schedule interval. |
+| IP spoofing to dodge limits | `X-Forwarded-For` trusted only `TRUSTED_PROXY_HOPS` entries from the right. |
+| Malicious repositories | Streamed download cap; zip-slip and zip-bomb checks before extraction; symlinks not followed; 5 MB file cap; worker threads; non-root container. |
+| Cross-project state tampering | Triage rows keyed by (project, fingerprint); fingerprint must exist in that project's findings; path segments regex-validated. |
+| Cross-origin abuse | Explicit CORS origins; no credentialed CORS; explicit methods and headers. |
+| Email injection | Alert HTML is escaped; paste content never included. |
+| CI script injection | Action inputs go through `env:` only. |
+| Mixing demo data into real data | Seeder refuses when any scan exists or `ACCESS_TOKEN` is set; `SEED_DEMO` gate on Render. |
+| Test suite wiping a real database | Refuses `TEST_DATABASE_URL` without `test` in the database name. |
+| Dependency vulnerabilities | `pip-audit` clean; `npm audit --omit=dev` clean. Seven build-time advisories remain in Tailwind 3's dependency chain (§21). |
+
+**Not defended:** multi-user isolation, per-user audit trails, CSRF (not applicable: there are no cookies), and verification that a detected key is live (deliberately out of scope).
+
+---
+
+## 18. Testing and verification
+
+### 18.1 Automated suites
+
+| Suite | Count | Contents |
+|---|---|---|
+| `tests/test_api.py` | 13 | Full paste-scan lifecycle over HTTP (ASGI transport): scan, findings, filters, diff, all exports, stats, delete |
+| `tests/test_hardening.py` | 20 | No raw secret in 8 responses and exports; paste digest; interrupted scans and restored schedules; cron validation; zip bomb and member cap; placeholder edge case; escaped email |
+| `tests/test_inventory.py` | 26 | Fingerprints; ledger grouping and exposure; projects; triage persistence, bounds, expiry, legacy rows, rejection; trend; diff; alert selection; deduplicated stats; stable paths; symlinks; 5 MB cap; vendored dirs in history |
+| `tests/test_security.py` | 18 | Token on every router; public `/health`; client IP; sliding window; rate, concurrency, and schedule caps; additive upgrade (incl. oversized legacy rows); WebSocket auth via ASGI handshake (accept / `401`); demo-seeding safeguards |
+| `tests/test_cli.py` | 9 | History-only detection; baseline suppression; no secrets in baselines; `--fail-on`; SARIF only unbaselined; JSON per credential; exit 2; key-bound baselines; CLI/server fingerprint agreement; single-run `--sarif` |
+| `tests/test_risk.py` | 13 | Score bases, bonuses, cap, reasons |
+| `tests/test_sarif.py` | 9 | Structure, rule dedup, levels, fingerprints (incl. the credential fingerprint), empty doc |
+| `tests/test_remediation.py` | 13 | Env-var names, per-language replacements, patch hunks |
+| `tests/test_validation.py` | 9 | URL allow-list, paste size, cron, pagination |
+| **Backend total** | **130** | |
+| `test_scanner.py` (root) | 19 | Legacy `scanner_core.py` module |
+
+The `client` fixture gives each test a fresh schema (`drop_all` + `init_db`), resets the rate limiter, and disposes the engine pool after each test; asyncpg connections are bound to the event loop that opened them. With `TEST_DATABASE_URL`, the same suite runs on Postgres. WebSocket tests drive the ASGI handshake on the test's own event loop: Starlette's `TestClient` would run the app on a second loop, which the asyncpg pool can't share. That was the cause of three Postgres-only failures, fixed in this release.
+
+### 18.2 What was run for this release
+
+| Check | Result |
+|---|---|
+| Backend suite, SQLite, Python 3.14 | 130 passed |
+| Backend suite, PostgreSQL 18 (local), Python 3.14 | 130 passed |
+| Backend suite, Python 3.11 (`python:3.11-slim` container, matching CI) | 130 passed; legacy suite 19 passed |
+| Legacy suite | 19 passed |
+| Frontend `npm run lint` / `typecheck` / `build` | 0 problems / pass / pass |
+| `pip-audit -r backend/requirements.txt` | No known vulnerabilities |
+| `npm audit --omit=dev` | 0 vulnerabilities; full audit: 7 (Tailwind 3 build chain) |
+| Legacy-database upgrade on PostgreSQL with a 12 KB `source_ref` | Unguarded index fails (`ProgramLimitExceededError`); guarded upgrade completes and leaves data intact |
+| Docker image build + run; Compose stack through nginx | Verified (§16.2) |
+| Action scripts under `bash -eo pipefail` | Clean tree exit 0; new leak exit 1 with 1 SARIF result |
+| Browser checks (demo data) | Landing, overview, projects, ledger triage, scan report, exports, unlock/lock in private mode, rate-limit message, 375 px layout |
+
+### 18.3 Not verified
+
+- The Action on a real GitHub runner; the `self-scan` job on GitHub.
+- Any deployment of 3.0 (Render, Vercel, Neon); `TRUSTED_PROXY_HOPS=1` on Render.
+- Email delivery (SMTP was never configured during testing).
+- Private-repository scanning with a `GITHUB_TOKEN`.
+
+---
+
+## Troubleshooting
+
+**The console says "connecting to the CipherWatch API…" for a long time.** A sleeping free-tier backend can take up to a minute to start. If it then shows an error, check `VITE_API_URL` (it is baked in at build time, so redeploy after changing it), confirm `/health` loads in a browser, and check `CORS_ORIGINS` contains the console's exact origin (scheme + host, no trailing slash).
+
+**Every request returns 401.** The server has `ACCESS_TOKEN` set. Unlock in the console, or send `Authorization: Bearer <token>`. If the token changed, use "Lock" and unlock again.
+
+**Live progress never updates, but scans complete.** The WebSocket is blocked, typically by a proxy without upgrade headers. The console falls back to polling, so this is cosmetic. Behind nginx, keep the `Upgrade`/`Connection` headers from `frontend/nginx.conf`.
+
+**`429 Scan limit reached`.** The per-IP window is full; wait for `Retry-After`, or raise `SCAN_RATE_LIMIT` on a private instance. If *every* user hits it at once behind a proxy, `TRUSTED_PROXY_HOPS` is probably `0`, so all requests appear to come from the proxy's address.
+
+**Verifying `TRUSTED_PROXY_HOPS` on Render.** Temporarily log `request.headers.get("x-forwarded-for")` and `request.client.host` in a route, make a request, and confirm that the entry `TRUSTED_PROXY_HOPS` positions from the right is your public IP. If Render (or Cloudflare in front of it) appends two entries, set the value to `2`.
+
+**Startup log: "Not indexing scans.source_ref".** The database has pre-2.1 paste rows with long `source_ref` values. Everything works; lookups by source are just unindexed. Deleting those old paste scans and restarting creates the index.
+
+**CI `self-scan` fails on fixtures you added on purpose.** Regenerate the baseline from a clean copy of tracked files and review the diff before committing:
+
+```bash
+git ls-files -co --exclude-standard -z | rsync -a --from0 --files-from=- ./ /tmp/cw-clean/
+python cli.py baseline /tmp/cw-clean -o .cipherwatch-baseline.json
 ```
 
-### 21.2 Filtering findings by severity on the report page
+**`cipherwatch: … was created with a different FINGERPRINT_KEY` (exit 2).** The baseline's `key_id` doesn't match the key in use. Run with the same `FINGERPRINT_KEY` that created it, or regenerate the baseline.
 
-```text
-User clicks the "CRITICAL" chip in the severity filter strip
-        │
-        ▼
-ScanDetail.tsx: setSeverityFilter('CRITICAL')   — plain useState, no API call
-        │
-        ▼
-Local re-render: `visible = all.filter(f => f.severity === 'CRITICAL')`
-groupByFile(visible) re-groups the already-fetched findings client-side
-        │
-        ▼
-Only CRITICAL-severity file groups re-render on screen — no network round-trip,
-because ALL findings for the scan were already fetched once (limit: 500)
-and severity filtering happens entirely in the browser.
-```
-*(Contrast: `GET /scans/{id}/findings` **does** support a server-side `severity` query param, and `ScanHistory`'s search box also filters client-side over an already-fetched list — both deliberate choices given the small, single-scan-scoped data volumes involved; a server round-trip per keystroke/click would be strictly worse UX here.)*
+**CLI fingerprints don't match the console's.** The server must get its key from the `FINGERPRINT_KEY` environment variable (a server-generated key isn't shared), and the CLI must have the same value.
 
-### 21.3 Creating a recurring schedule
+**Schedules didn't run overnight.** On a free tier, the server sleeps when idle and missed fire times are skipped. Use an external free uptime pinger, or accept best-effort scheduling.
 
-```text
-User clicks "New schedule" → form panel expands (CSS grid-template-rows
-transition, not a hard show/hide) → fills name, repo URL, picks a cron
-preset chip (or types custom) → submits
-        │
-        ▼
-createMut.mutate(body)  → POST /api/v1/schedules
-        │
-        ▼
-schedules.py create_schedule()
-   ScheduleCreate validates: name 1-120 chars, source_ref passes the
-   GitHub-URL allow-list, source_type is github, cron parses and
-   fires no more often than every 15 minutes
-        │
-   ScanSchedule row inserted (enabled=True by default)
-        │
-   add_schedule(schedule.id, cron_expression, source_type, source_ref)
-     parses the 5 cron fields → CronTrigger
-     _scheduler.add_job(_run_scheduled_scan, trigger=..., id=schedule.id, ...)
-     returns computed next_run_time
-        │
-   schedule.next_run_at = next_run; commit
-        │
-        ▼
-Response returns the created ScheduleOut → onSuccess invalidates ['schedules']
-→ the schedules table re-fetches and the new row appears, form collapses.
+**`pytest` exits with "TEST_DATABASE_URL must name a disposable database".** The guard refuses database names without `test`. Point it at a throwaway database such as `cipherwatch_test`.
 
-  ... independently, whenever the cron trigger actually fires (could be
-  hours/days later, with zero browser tabs open) ...
-
-_run_scheduled_scan(schedule_id, source_type, source_ref)
-   creates a new Scan row, updates schedule.last_run_at/last_scan_id
-   calls _run_scan(scan_id) — the IDENTICAL code path a manual scan uses
-   recomputes and stores schedule.next_run_at for the following occurrence
-```
+**Postgres tests fail with "attached to a different loop".** Something started a second event loop, for example Starlette's `TestClient`. Use the ASGI-level helper pattern in `TestWebSocketAuth`.
 
 ---
 
-## 22. Design Decisions & Trade-offs
+## 20. Design decisions and trade-offs
 
-**Deterministic detection (regex + entropy) instead of an LLM/ML classifier.** Alternative considered implicitly: train or call a model to classify "is this a secret?" Pros of the chosen approach: zero inference cost, zero API latency, fully deterministic (the same input always produces the same output, which matters enormously for a security tool's trustworthiness and for reproducible tests), and every decision is explainable in plain English (a regex either matched or it didn't; an entropy score is a real, inspectable number). Cons: cannot generalize to a truly novel secret format never seen before without a human writing a new `SecretPattern`; a sufficiently obfuscated or split-across-lines secret could evade it. This trade-off favors precision, auditability, and zero operating cost over generalization — appropriate for a security tool whose false-positive rate directly determines whether anyone keeps using it.
-
-**Git history scanning is opt-in, not automatic.** Covered in depth in §7.5. The trade-off is thoroughness vs. speed: full-history scanning is `O(commits × files)`; making it opt-in keeps the default "quick check" experience fast while still offering the deeper audit for anyone who explicitly asks for it.
-
-**SQLite in production instead of Postgres.** Trade-off: zero infrastructure cost and zero connection-pool complexity, at the cost of no true concurrent-writer support and (on Render's free tier specifically) non-durable storage across redeploys. Appropriate for a free-tier demo deployment; the same codebase runs against Postgres unchanged (proven by `docker-compose.yml`), so this is a config change, not an architecture change, if traffic or durability requirements grow.
-
-**No authentication.** Every visitor shares one dataset. Appropriate for a public portfolio demo; genuinely wrong for a real multi-tenant product. What would need to change: a `users` table, a login flow issuing session tokens or JWTs, a `tenant_id`/`owner_id` foreign key added to `scans` and `scan_schedules`, and every query in every router scoped by the authenticated user's ID (`.where(Scan.owner_id == current_user.id)`) — the single most important thing to get right in that migration, since a forgotten scope filter on even one query is a cross-tenant data leak.
-
-**No repository write access / no auto-opened pull requests for remediation.** The remediation feature (§7.8) deliberately generates suggestions and a downloadable patch rather than opening a PR or committing code on the user's behalf. Trade-off: less "magic," more manual steps for the user — but it also means the tool never needs write credentials to a user's repository, which is a meaningfully smaller trust footprint and attack surface for a security tool to carry.
-
-**Hand-built SVG charts instead of a charting library.** Covered in §16. Trade-off: more code to write and maintain per chart type, versus a smaller bundle and complete control over the exact visual language matching the rest of the design system.
-
-**WebSocket for scan progress despite being used one-directionally.** Named honestly in §10 rather than retrofitted with an invented justification — a legitimate example of "the tool reached for at the time" not perfectly matching "the tool that's provably necessary," and a good illustration of being able to reassess and describe a past decision accurately rather than defensively.
-
----
-
-## 23. Known Limitations
-
-Stated plainly, because knowing exactly where a system's edges are is itself a sign of engineering maturity:
-
-- **No authentication or multi-tenancy.** All data is shared across every visitor.
-- **Scans are not durable jobs.** A `_run_scan()` background task is tied to the FastAPI process. A restart mid-scan loses the work; startup reconciliation marks the scan `failed` instead of leaving it `running`, but it is not retried automatically.
-- **Schedules are re-registered from the database at startup.** APScheduler's job store is in memory, so `restore_schedules()` rebuilds it on every boot (paused schedules included). A schedule whose fire time passes while the server is asleep is skipped, not run late.
-- **The WebSocket registry is per-process and in-memory.** A multi-instance deployment would need a shared pub/sub layer (e.g., Redis) for broadcasts to reach clients connected to a different instance than the one running their scan.
-- **No "already alerted" suppression on scheduled scans.** An unresolved CRITICAL finding triggers a fresh email on every scheduled run that still detects it, not just the first time.
-- **SQLite on Render's free tier is not guaranteed durable across redeploys**, which is why demo data is re-seeded (idempotently) on every deploy rather than assumed to persist.
-- **Deterministic detection has a false-negative ceiling.** A genuinely novel secret format, or one deliberately obfuscated to avoid pattern/entropy detection, can evade this system — as any static-analysis-based tool can.
-- **The remediation `.patch` file is not guaranteed to cleanly `git apply`.** It documents the intended before/after per finding using the masked (not real) secret value, and is explicitly meant as a precise reference for a human, not a robotic auto-fix.
+- **Ledger over detector.** Detection is commoditized; post-detection tracking isn't. The cost is more state (`credential_states`), with identity rules that must be stable, hence the work on repo-relative paths and key handling.
+- **HMAC fingerprints, value- vs. location-scoped.** Value scoping gives true deduplication for high-entropy, format-specific keys. Location scoping avoids keyed hashes of guessable values and copes with marker patterns. The trade-off: a generic password moved to another file looks like a new credential.
+- **Triage keyed by fingerprint, not by finding.** Decisions survive rescans and moves. Waivers must expire, so "accepted" can't quietly become permanent.
+- **Additive startup upgrades instead of Alembic.** Zero tooling and safe on both databases for the changes made so far; the limit is anything destructive.
+- **Single process, in-process limits and scheduler.** Free to host and simple to reason about; not horizontally scalable (WebSocket registry, limiter, and scheduler are all per-process).
+- **Token-based private mode instead of user accounts.** Enough to keep a personal or team workspace private at zero cost; no per-user attribution.
+- **Subprotocol for WebSocket auth.** Keeps tokens out of logs, at the cost of a less common pattern that needs the server to echo `cipherwatch.v1`.
+- **Deterministic detection, no ML.** Explainable, reproducible, and free; can't generalize to unseen formats without new patterns.
+- **No live verification.** Ethical and authorization boundary; every finding is treated as live.
+- **SARIF with two partial fingerprints.** Keeps continuity with alerts created by earlier versions while letting code scanning follow a moved key.
+- **Hand-built charts and design system.** Precise control and no chart or component-library weight; more code to maintain.
+- **Remediation as suggestions and a patch, not auto-PRs.** The tool never needs write access to a repository.
 
 ---
 
-## 24. Interview Question Bank
+## 21. Known limitations
 
-### Beginner
-**Q: What problem does this project solve?**
-A: It finds credentials (API keys, passwords, tokens) that were accidentally typed directly into source code and committed to Git, before or after that code becomes visible to people who shouldn't have access to those credentials.
-
-**Q: What is Shannon entropy and why does this project use it?**
-A: A measure of how random/unpredictable a string is, based on information theory. Real generated secrets tend to be high-entropy; English words and simple test values tend to be low-entropy. It's used as a secondary filter (alongside pattern matching) to catch secrets that don't match a known credential's exact format.
-
-**Q: Why does the frontend ping `/health` on load?**
-A: The backend is hosted on Render's free tier, which sleeps after 15 minutes of inactivity and takes 30-60 seconds to cold-start. Pinging immediately starts that wake-up clock before the user does anything that actually needs the backend.
-
-### Intermediate
-**Q: Walk me through what happens when I click "Run scan."**
-A: See the full trace in [§21.1](#211-launching-a-scan-the-complete-trace) — summarized: the form POSTs to `/api/v1/scans`, the backend inserts a `queued` row and schedules a background task, returns immediately, the frontend opens a WebSocket *and* starts a fallback HTTP poll in parallel, the background task runs the actual scan and broadcasts progress, and whichever channel (socket or poll) observes `completed` first navigates to the report page.
-
-**Q: Why is git-history scanning opt-in instead of always-on?**
-A: It's a full per-commit tree re-scan — `O(commits × files)`, not a diff between consecutive commits — so it's meaningfully more expensive than a current-tree-only scan. Making it opt-in keeps the default experience fast for the common "quick check" case, while still offering the deeper audit for anyone who explicitly wants it.
-
-**Q: Why use `BackgroundTasks` instead of a proper task queue like Celery?**
-A: Scale and simplicity trade-off appropriate to this project's traffic level: `BackgroundTasks` needs no extra infrastructure (no Redis/broker) and runs in-process. The honest cost is durability — if the server restarts mid-scan, that scan is lost with no automatic retry, which a real task queue with persistent job storage would solve.
-
-**Q: How does the differential (diff) scanning feature work?**
-A: On request (not precomputed), it looks up the most recent earlier *completed* scan sharing the same source, reduces both scans' findings to a stable identity key of `(file_path, secret_type, matched_string)` — deliberately excluding line number, since unrelated earlier edits can shift line numbers without the secret moving — and computes new/resolved/unchanged via three Python set operations.
-
-### Advanced
-**Q: This uses WebSocket for progress, but you said it's one-directional — why not use Server-Sent Events (SSE)?**
-A: Honestly, it should probably be SSE. The server only ever pushes progress messages; the client never sends anything back over that connection — there's no cancel/pause control channel actually implemented. WebSocket was the tool reached for building this feature, but SSE's native auto-reconnect and simpler plain-HTTP transport would be the more precisely-justified choice for a push-only feed like this one.
-
-**Q: How would you scale this to handle many concurrent scans across multiple server instances?**
-A: Several pieces would need to change together: (1) the in-memory `_ws_registry` would need to move to a shared pub/sub layer (Redis Pub/Sub or similar) so a broadcast fired on the instance running a scan reaches a client connected to a different instance; (2) `BackgroundTasks` would need to become a real job queue (Celery, or an APScheduler job store backed by a shared database instead of in-memory) so a scan survives an individual process restarting; (3) the database would need to move to Postgres with real connection pooling for genuine concurrent-writer support, which the codebase already supports via `asyncpg` without any query-layer changes.
-
-**Q: What would break first under real production load, and how would you find out?**
-A: Given the architecture, my first suspicion would be the git-history scan path — `O(commits × files)` per scan, running inside a single request's background task with no queue depth limit, could let a burst of large-repo scans starve the process. I'd add request-level concurrency limits on that endpoint and real APM/timing instrumentation around `_run_scan` before assuming anything, rather than guessing.
-
-**Q: Why is the risk score an additive heuristic instead of a trained model?**
-A: Explainability and zero operating cost. Every point added to the score has an attached, human-readable reason (`"Present in Git history"`, `"Extended exposure (10 days)"`) that ships to the UI — a security tool's output needs to be defensible in a review, and a black-box model score without that reasoning is much harder to trust and act on.
-
-### Common Follow-Ups
-
-**"What if the database goes down?"** Every route that touches the DB does so through the `get_db()` dependency, which wraps the session in a try/except that rolls back on any exception — a DB outage would surface as a 500 error on affected requests rather than silently corrupting state, but there's no retry/circuit-breaker logic currently, so the honest answer is "requests would fail loudly, not gracefully degrade."
-
-**"How would you add authentication?"** A `users` table, a login endpoint issuing a session token/JWT, a FastAPI dependency (parallel to `get_db`) that validates that token and resolves the current user, an `owner_id` column added to `scans` and `scan_schedules`, and every existing query scoped by `.where(Scan.owner_id == current_user.id)`.
-
-**"Why not use an existing tool like TruffleHog or GitGuardian instead of building this?"** This project exists to demonstrate the *engineering* of building exactly this class of tool — the detection pipeline, the risk-scoring model, the real-time progress architecture, the SARIF-format interoperability, the full-stack async web application around it — end to end, not to compete commercially with mature, funded products in this space.
-
-**"How would you reduce false positives further?"** Options in increasing order of complexity: expand the placeholder-pattern list based on observed false positives; add per-repository allow-listing of known-safe strings; add a lightweight secondary classifier trained specifically on this tool's own historical true/false-positive labels (a much narrower, more tractable ML problem than general secret detection); or add live credential validation (actually attempt an authenticated call against the relevant provider's API to confirm a key is *live*) for the small set of providers where that's safe and ethical to do automatically.
+- **Single tenant.** Demo mode shares everything with every visitor; private mode is one shared token, with no users, roles, or per-user audit of decisions.
+- **GitHub only; private repos untested.** A `GITHUB_TOKEN` with repo access lets the archive download work, but history clones don't use the token, so history scans of private repos fail (current-code results are still returned).
+- **Case-sensitive projects.** `Acme/API` and `acme/api` are separate projects.
+- **History depth.** Clones use `--depth=max_commits` (default 100).
+- **Scans aren't durable jobs.** A restart mid-scan fails it; there are no retries. Missed schedule fire times are skipped.
+- **Per-process state.** The WebSocket registry, rate limiter, and scheduler don't work across multiple instances; the concurrency cap is soft.
+- **Additive migrations only.** Pre-2.1 rows (unmasked context, raw paste `source_ref`) are left as they were; delete those scans to remove them.
+- **Generic credentials are location-scoped**, so moving a generic password to another file creates a new credential (with no triage carried over).
+- **Changing `FINGERPRINT_KEY` re-keys everything**; existing triage stops matching new scans.
+- **Detection ceiling.** Novel formats, or secrets split or obfuscated across lines, can be missed.
+- **Remediation patch** uses masked values and isn't guaranteed to `git apply`.
+- **Render specifics unverified** (`TRUSTED_PROXY_HOPS=1`, cold starts with this release).
+- **Build-tool advisories.** 7 `npm audit` advisories in Tailwind CSS 3's build-time dependencies (`braces`, `micromatch`, `chokidar`, `fast-glob`, `postcss-selector-parser`, `postcss-nested`, `tailwindcss`). None ship to the browser; clearing them needs a Tailwind 4 migration.
+- **Legacy module.** `scanner_core.py` and `test_scanner.py` remain but are unused by the product; a candidate for removal.
 
 ---
 
-## 25. Glossary
+## 22. Interview question bank
 
-| Term | Simple definition | Technical definition | In this project |
-|---|---|---|---|
-| **ORM** | A translator between database rows and programming-language objects | Object-Relational Mapper — a library mapping table rows to class instances and back, generating SQL from method calls | SQLAlchemy; `Scan`, `Finding`, `ScanSchedule` classes in `models.py` |
-| **Migration** | A recorded, repeatable change to a database's structure | A versioned script that alters schema (add/drop columns, tables) in a reproducible, ordered way | **Not used here** — `init_db()` uses `Base.metadata.create_all()`, which only ever creates missing tables; it never alters existing ones. A real migration tool (Alembic) would be needed before changing an existing column's type/constraints in production without data loss. |
-| **Dependency Injection** | Handing a function what it needs instead of it fetching things itself | A pattern where a framework supplies a function's required collaborators (here, a DB session) automatically based on its declared parameter types | FastAPI's `Depends(get_db)` on every route that needs a database session |
-| **Middleware** | A checkpoint every request passes through before reaching its destination | Code that wraps the request/response cycle, running before and/or after the actual route handler | `CORSMiddleware` in `main.py` |
-| **Event Loop** | A single worker juggling many waiting tasks at once instead of doing them one at a time | The core of `asyncio` — schedules and resumes coroutines, switching between them at `await` points | What every `async def` function in the backend runs on |
-| **Idempotent** | Doing it twice has the same effect as doing it once | An operation whose repeated application produces the same end state as a single application | `seed_demo.py`'s `if count >= len(DEMO_SCANS): return` guard |
-| **Cascade delete** | Deleting the parent automatically cleans up its children | A database/ORM-level rule that propagates a delete from a parent row to its dependent rows | `Scan.findings` relationship's `cascade="all, delete-orphan"` |
-| **Regex (Regular Expression)** | A pattern language for describing "shapes" of text | A formal mini-language for matching character sequences against a defined pattern | Every `SecretPattern.regex` in `patterns.py` |
-| **Lookaround assertion** | Checking what's next to a match without including it in the match | A zero-width regex assertion (`(?<!...)`, `(?!...)`) that requires/forbids adjacent text without consuming it | The AWS key pattern's boundary checks, §7.2 |
-| **Streaming response** | Sending a file to the browser as a download instead of as page content | An HTTP response whose body is generated/sent incrementally with headers directing the browser to save it as a file | `StreamingResponse` + `Content-Disposition: attachment` in `export.py` |
+**What does CipherWatch do that a scanner doesn't?**
+It tracks credentials, not lines. Every occurrence of a key collapses into one record with a persistent decision (rotated, false positive, or accepted risk with an expiry), history-aware exposure, and a trend. CI fails only on credentials that aren't in a committed baseline.
+
+**How do you deduplicate without storing the secret?**
+An HMAC-SHA256 of the value under a per-install key, truncated to 128 bits. It's one-way, so the database and baselines never hold the secret. Low-entropy generic values and marker patterns are fingerprinted by pattern + path + masked match instead, so a guessable password is never hashed by value.
+
+**Why must accepted risks expire?**
+Without an expiry, "accepted" becomes a permanent mute. A required review date (at most 366 days) makes the waiver reopen on its own and show as overdue.
+
+**How does WebSocket auth work without headers?**
+The browser offers subprotocols `cipherwatch.v1, bearer.<token>`. The server validates the bearer entry in the router dependency, before accepting, and selects `cipherwatch.v1`. A query parameter would leak the token into access logs.
+
+**Why did three tests fail only on Postgres?**
+Starlette's `TestClient` runs the app on its own event loop in a thread, and asyncpg connections can't be used across loops; SQLite didn't care. The fix drives the ASGI handshake directly on the test's loop, which still exercises the real dependency and endpoint.
+
+**What was the Postgres-only production bug?**
+Timezone-aware datetimes from APScheduler written into a naive `DateTime` column: SQLite stored them, asyncpg rejected them, so schedule creation would have failed on Neon. Pinning the scheduler to UTC and normalizing to naive UTC fixed it, and running the suite on Postgres found it.
+
+**How would you scale this?**
+- Move scans to a durable queue.
+- Use shared pub/sub for progress.
+- Move rate limiting to a shared store.
+- Use a persistent scheduler job store.
+- Adopt Alembic.
+- Add users and tenancy, with every query scoped by tenant.
+
+All of it is deliberately avoided today to stay at $0.
+
+**How do you prevent CI script injection in a composite action?**
+Never interpolate `${{ inputs.* }}` into `run:` scripts. Pass values via `env:` and quote them in shell.
+
+**Why not verify keys against providers?**
+It means using credentials you don't own. It's an authorization and ethics line, and treating every detection as live is the safe default.
+
+**What would you do next?**
+Users and tenancy, durable jobs, Alembic, case-insensitive project identity, a Tailwind 4 migration, and SSE instead of WebSocket.
 
 ---
 
-## 26. Complete Walkthrough: Opening the App
+## 23. Glossary
 
-*A single, start-to-finish narration — every layer, in order, for a first-time visitor who explores every major feature.*
-
-A visitor navigates to `https://cipherwatch-web.vercel.app`. Vercel's CDN serves the static `index.html` and JS/CSS bundles instantly (no cold-start delay on the frontend — only the backend sleeps). React mounts. The very first thing that happens, before any visible content, is a fire-and-forget `GET /health` to the Render backend — starting its wake-up clock immediately.
-
-React Router matches the root path `/` to `Dashboard.tsx`. It fires `GET /api/v1/stats`. If the backend was asleep, this request may take up to a minute; the page shows a small animated `loading overview…` placeholder in the meantime — no blank white screen, no layout shift once data arrives. When the response lands, five things render in order down the page: a hairline-divided stat strip (total scans, total findings, critical count, high count — each a large mono numeral), a stacked severity-spectrum bar showing the proportion of CRITICAL/HIGH/MEDIUM/LOW across every finding ever recorded, a hand-drawn SVG stepped line chart of findings-per-day with a hoverable crosshair, a ranked list of the most-detected secret types, and (if the most recent completed scan has a prior baseline to compare against) a diff summary ledger, and finally a recent-activity table of the last six scans.
-
-The visitor clicks "New scan" in the top bar. `NewScan.tsx` renders a segmented source picker defaulting to "GitHub repository." They switch to "Pasted code," paste a snippet containing a fake `AKIA...` key, leave the entropy floor at its default `3.5`, and click "Run scan." The full trace in [§21.1](#211-launching-a-scan-the-complete-trace) plays out: a `Scan` row is inserted with `status='queued'`, a background task starts, a WebSocket opens, and — because a tiny paste scan finishes in well under a second — the fallback HTTP poll is what actually notices completion first in this case, guarded so the WebSocket's own (slightly later) completion message becomes a harmless no-op. The browser navigates to `/history/<new-id>`.
-
-`ScanDetail.tsx` loads three things in parallel: the scan record, its findings, and its diff against any prior scan of the same source (none exists yet, for a first paste). The report renders: a header with the source name and four export buttons (JSON/CSV/SARIF/Patch), a meta line (status/files/completed-at/id), a severity filter strip showing exactly "1 CRITICAL" clickable, and — grouped under the single file heading `"paste"` — one finding row with a red severity spine, the label "AWS Access Key," the masked value, the line number, and a computed risk score. Clicking the row expands it via a smoothly-animated CSS grid-row transition, revealing the 10-segment risk meter, the plain-English list of contributing factors ("Critical severity," possibly "High entropy" if the fake key was random enough), an empty lifecycle section (this scan never touched git history, so `LifecycleTimeline` correctly renders nothing), the full matched string, entropy value, confidence, and a numbered remediation checklist generated specifically for this AWS-key type.
-
-The visitor navigates to "Scans," which lists every scan ever run in a dense, sortable-by-recency table; typing in the search box (or pressing `/` from anywhere on the page to focus it instantly) filters the list client-side with no network round-trip, since the full list was already fetched once and cached by TanStack Query.
-
-Finally, they visit "Schedules," expand the "New schedule" panel, pick the "daily 09:00" cron preset, paste a real public GitHub repo URL, and submit. A `ScanSchedule` row is created and, in the same request, a matching APScheduler cron job is registered in the backend's live scheduler — from this point forward, once every day at 09:00 UTC, completely independent of whether anyone ever opens this website again, that repository will be re-scanned automatically, its results saved, its diff computed against the previous run, and — if any CRITICAL secret is present — an email alert sent, closing the loop from "a developer accidentally typed a secret into a file" all the way to "a human received an email telling them exactly what to fix and how."
+| Term | Meaning here |
+|---|---|
+| **Credential** | One secret value (or, for generic and marker patterns, one location), however many findings mention it |
+| **Finding** | One detection at one file/line (or one aggregated history entry) |
+| **Fingerprint** | 32-hex HMAC identifying a credential; never contains the secret |
+| **Key ID** | 12-hex HMAC of a constant under the fingerprint key; detects mismatched keys |
+| **Baseline** | Committed JSON of known credential fingerprints; CI fails only on others |
+| **Triage / decision** | A credential's status: `open`, `rotated`, `false_positive`, `accepted_risk` |
+| **Waiver** | An `accepted_risk` decision with a mandatory `review_by` |
+| **Exposure** | `working_tree` (in the current code) or `history_only` |
+| **Marker pattern** | A pattern whose match is a fixed header (e.g. `-----BEGIN RSA PRIVATE KEY-----`), not the secret |
+| **Demo mode / private mode** | `ACCESS_TOKEN` unset / set |
+| **Additive upgrade** | Idempotent startup DDL that only adds nullable columns and indexes |
+| **SARIF** | Static Analysis Results Interchange Format 2.1.0, consumed by GitHub code scanning |
+| **Shannon entropy** | Average bits of unpredictability per character |
+| **Sliding-window limiter** | Counts requests in the trailing window per key |
