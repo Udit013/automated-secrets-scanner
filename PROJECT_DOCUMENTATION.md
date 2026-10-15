@@ -461,7 +461,7 @@ Steps:
 
 **Runners.** Linux and macOS only: the private virtualenv is invoked as `$RUNNER_TEMP/cipherwatch-venv/bin/python`, a path that doesn't exist on Windows runners.
 
-**Verification status.** Both script steps were run locally exactly as written, under `bash -eo pipefail`: a clean tree exits 0 with an empty SARIF, and an injected token exits 1 with one SARIF result. The YAML parses. The action has **not** yet run on a real GitHub runner, since that needs a push.
+**Verification status.** Both script steps were run locally exactly as written, under `bash -eo pipefail`: a clean tree exits 0 with an empty SARIF, and an injected token exits 1 with one SARIF result. On GitHub (CI run for commit `7a8a228`), the `self-scan` job ran the action on `ubuntu-latest`: 100 files, 45 credentials, 0 new, and the SARIF upload to code scanning validated and processed.
 
 ### 13.2 `.github/workflows/ci.yml`
 
@@ -582,7 +582,9 @@ Verified: the image builds and runs as uid 10001, `/health` answers, a paste sca
 6. Optional: `GITHUB_TOKEN`, SMTP variables.
 7. After the first deploy, verify `TRUSTED_PROXY_HOPS=1` (see Troubleshooting).
 
-**Unverified:** none of the 3.0 changes have been deployed. The `TRUSTED_PROXY_HOPS=1` assumption (that Render's proxy appends exactly one `X-Forwarded-For` entry), cold-start timing, and Neon connectivity with this release have not been tested live.
+**Deployed and checked (Oct 2026):** pushing to `main` auto-deploys both services. Render served `3.0.0` about a minute after the push, with `demo: true`; Vercel reported a successful production deployment. Live checks passed: projects, deduplicated exposure, ledger, triage round trip, CORS limited to the console origin, `wss://` progress with subprotocol negotiation, a paste scan storing only a label and masked value, and SARIF export with a readable filename.
+
+**Still unverified:** the `TRUSTED_PROXY_HOPS=1` assumption (that Render's proxy appends exactly one `X-Forwarded-For` entry), and Neon/private mode on Render (the production demo runs SQLite in public mode).
 
 ---
 
@@ -644,11 +646,13 @@ The `client` fixture gives each test a fresh schema (`drop_all` + `init_db`), re
 | Docker image build + run; Compose stack through nginx | Verified (§16.2) |
 | Action scripts under `bash -eo pipefail` | Clean tree exit 0; new leak exit 1 with 1 SARIF result |
 | Browser checks (demo data) | Landing, overview, projects, ledger triage, scan report, exports, unlock/lock in private mode, rate-limit message, 375 px layout |
+| GitHub Actions CI (commit `7a8a228`) | All 4 jobs passed: backend 130 tests, legacy, frontend lint + typecheck + build, self-scan via the composite action with SARIF upload |
+| Production (Render + Vercel) | `/health` 3.0.0; live API, UI, WebSocket, triage, and export checks passed (§16.3) |
 
 ### 18.3 Not verified
 
-- The Action on a real GitHub runner; the `self-scan` job on GitHub.
-- Any deployment of 3.0 (Render, Vercel, Neon); `TRUSTED_PROXY_HOPS=1` on Render.
+- `TRUSTED_PROXY_HOPS=1` on Render (whether the per-IP limit sees real client addresses).
+- Private mode and Neon Postgres on a hosted deployment (production runs the public SQLite demo).
 - Email delivery (SMTP was never configured during testing).
 - Private-repository scanning with a `GITHUB_TOKEN`.
 

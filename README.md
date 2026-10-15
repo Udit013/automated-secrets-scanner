@@ -134,7 +134,7 @@ jobs:
           history: "true"
           baseline: .cipherwatch-baseline.json   # skipped if the file doesn't exist
       - if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with: { sarif_file: "${{ steps.scan.outputs.sarif-file }}" }
 ```
 
