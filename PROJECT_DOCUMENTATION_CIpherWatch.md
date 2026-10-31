@@ -129,11 +129,11 @@ automated-secrets-scanner/
 │   │   ├── services/inventory.py # Credential grouping, triage, trend, exposure totals, alert selection
 │   │   ├── routers/              # scans.py · projects.py · export.py · schedules.py · stats.py
 │   │   └── workers/scheduler.py  # APScheduler wrapper (UTC)
-│   └── tests/                    # 130 tests (see §18)
+│   └── tests/                    # 139 tests (see §18)
 └── frontend/
     ├── Dockerfile, nginx.conf    # Static build behind nginx; proxies /api (incl. WebSocket) and /health
     ├── vercel.json               # SPA rewrites for Vercel
-    ├── .eslintrc.cjs, vite.config.ts, tailwind.config.js, tsconfig.json
+    ├── eslint.config.js, vite.config.ts, tailwind.config.js, tsconfig.json
     └── src/
         ├── main.tsx, App.tsx, index.css
         ├── api/client.ts         # axios client, types, API functions, parseUtc, downloads
@@ -363,7 +363,11 @@ All `/api/v1` routers are mounted with `dependencies=[Depends(require_access)]` 
 | Repository archive | 100 MB download, 500 MB uncompressed, 50,000 members | Scan fails with a clear message |
 | Scanned file size | 5 MB | Larger files are skipped |
 
-- **Client IP.** `client_ip()` uses the socket peer unless `TRUSTED_PROXY_HOPS > 0`. Then it takes the entry that many positions from the **right** of `X-Forwarded-For`, which is the last address a trusted proxy appended, so anything a client prepends is ignored (tested).
+- **Global ceiling.** `SCAN_GLOBAL_RATE_LIMIT` (default 60 per window) counts every scan creation the per-IP limit allowed, from all clients combined. It doesn't depend on client addresses, so it holds even when they can be spoofed.
+- **Scheduled runs** skip a fire (logged) when `MAX_CONCURRENT_SCANS` scans are already queued or running; before this they bypassed the cap, so 25 schedules on one cron minute would have started 25 scans at once.
+- **Client IP.** `client_ip()` prefers `CLIENT_IP_HEADER`, a single-address header the edge overwrites (`cf-connecting-ip` on Render). A missing or non-IP value goes to one shared `unknown` bucket; it never falls back to `X-Forwarded-For` or the socket peer, which a client can influence. IPv6 collapses to its /64. Without `CLIENT_IP_HEADER`, `TRUSTED_PROXY_HOPS > 0` reads that many entries from the **right** of `X-Forwarded-For`, and otherwise the socket peer is used (all tested).
+- **429 responses** carry `X-RateLimit-Scope: client` (your address) or `global` (the shared ceiling) and a message that says which.
+- **Skipped scheduled runs** (concurrency cap full) increment `scheduled_runs_skipped` and set `last_scheduled_skip_at` on `/health`, besides the warning log. In-memory; resets on restart.
 - **Memory.** The limiter tracks at most 10,000 clients, evicting idle ones.
 - **Per-process state.** Limits are in-process: they reset on restart and aren't shared between instances.
 
@@ -533,7 +537,9 @@ Backend settings (`backend/app/config.py`, read from the environment or `backend
 | `SCAN_RATE_LIMIT`, `SCAN_RATE_WINDOW_SECONDS` | `10`, `600` | Per client IP |
 | `MAX_CONCURRENT_SCANS` | `3` | Soft cap |
 | `MAX_SCHEDULES` | `25` | |
-| `TRUSTED_PROXY_HOPS` | `0` | `1` behind exactly one appending proxy |
+| `SCAN_GLOBAL_RATE_LIMIT` | `60` | Per window, all clients combined |
+| `CLIENT_IP_HEADER` | _(unset)_ | Header the edge overwrites with the client address. `render.yaml` sets `cf-connecting-ip`; also the default when `RENDER=true` |
+| `TRUSTED_PROXY_HOPS` | `0` | Appending proxies, read from the right of `X-Forwarded-For`. **Not valid on Render** (see §16.3) |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Comma-separated |
 | `GITHUB_TOKEN` | empty | 60 → 5,000 GitHub API requests/hour |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `ALERT_EMAIL` | `smtp.gmail.com`, `587`, empty… | Alerts are disabled unless user, password, and recipient are set |
@@ -580,11 +586,21 @@ Verified: the image builds and runs as uid 10001, `/health` answers, a paste sca
 4. `DATABASE_URL`: the Neon `postgresql+asyncpg://…` URL.
 5. `CORS_ORIGINS`: your console origin.
 6. Optional: `GITHUB_TOKEN`, SMTP variables.
-7. After the first deploy, verify `TRUSTED_PROXY_HOPS=1` (see Troubleshooting).
+7. Don't rely on the per-IP limit on Render (see below); the global ceiling is the working protection.
 
 **Deployed and checked (Oct 2026):** pushing to `main` auto-deploys both services. Render served `3.0.0` about a minute after the push, with `demo: true`; Vercel reported a successful production deployment. Live checks passed: projects, deduplicated exposure, ledger, triage round trip, CORS limited to the console origin, `wss://` progress with subprotocol negotiation, a paste scan storing only a label and masked value, and SARIF export with a readable filename.
 
-**Still unverified:** the `TRUSTED_PROXY_HOPS=1` assumption (that Render's proxy appends exactly one `X-Forwarded-For` entry), and Neon/private mode on Render (the production demo runs SQLite in public mode).
+**Render client-IP findings (Oct 31 2026, measured against the live service with a temporary header-echo route, since removed):**
+
+| Header | Behaviour on Render |
+|---|---|
+| `X-Forwarded-For` | `<client-supplied entries>, real client, Cloudflare edge, Render proxy`. The client prepends freely; the proxy count is not stable, and the rightmost entry is a rotating private `10.x` address. Unusable. |
+| `CF-Connecting-IP` / `True-Client-IP` | Written by Cloudflare. A spoofed `True-Client-IP` was ignored; a spoofed `CF-Connecting-IP` was rejected at the edge (Cloudflare error 1000). Trusted. |
+| Socket peer (`request.client.host`) | Uvicorn rewrites it from `X-Forwarded-For`, so it takes the **spoofed** value. Unusable. |
+
+Before the fix (`TRUSTED_PROXY_HOPS=1`), 13 scans with a different spoofed `X-Forwarded-For` were all accepted. After it, 10 scans with a rotating spoofed header were accepted and the 11th got `429` with `X-RateLimit-Scope: client`. The global ceiling stays as a backstop. Assumption to keep in mind: this relies on Render's origin being reachable only through Cloudflare; if that changes, the header would become spoofable and requests would need a different source.
+
+**Still unverified:** Neon/private mode on Render (the production demo runs SQLite in public mode).
 
 ---
 
@@ -597,7 +613,7 @@ Verified: the image builds and runs as uid 10001, `/health` answers, a paste sca
 | Unauthorized access to a private workspace | Bearer token on every `/api/v1` route, including the WebSocket; constant-time comparison; `401` before the handshake is accepted. |
 | Token exposure | Never in URLs (WebSocket uses the subprotocol); `sessionStorage` by default; the console sends it only to the API origin. |
 | Abuse of the public demo | Rate limit, concurrency cap, schedule cap, paste/archive/file-size caps, a 15-minute minimum schedule interval. |
-| IP spoofing to dodge limits | `X-Forwarded-For` trusted only `TRUSTED_PROXY_HOPS` entries from the right. |
+| IP spoofing to dodge limits | Limits key on the edge-written `CF-Connecting-IP` (verified live: rotating `X-Forwarded-For` no longer helps); a missing header shares one bucket; a global scan ceiling and the concurrency cap bound total load regardless. |
 | Malicious repositories | Streamed download cap; zip-slip and zip-bomb checks before extraction; symlinks not followed; 5 MB file cap; worker threads; non-root container. |
 | Cross-project state tampering | Triage rows keyed by (project, fingerprint); fingerprint must exist in that project's findings; path segments regex-validated. |
 | Cross-origin abuse | Explicit CORS origins; no credentialed CORS; explicit methods and headers. |
@@ -605,7 +621,7 @@ Verified: the image builds and runs as uid 10001, `/health` answers, a paste sca
 | CI script injection | Action inputs go through `env:` only. |
 | Mixing demo data into real data | Seeder refuses when any scan exists or `ACCESS_TOKEN` is set; `SEED_DEMO` gate on Render. |
 | Test suite wiping a real database | Refuses `TEST_DATABASE_URL` without `test` in the database name. |
-| Dependency vulnerabilities | `pip-audit` clean; `npm audit --omit=dev` clean. Seven build-time advisories remain in Tailwind 3's dependency chain (§21). |
+| Dependency vulnerabilities | `pip-audit` clean; `npm audit --omit=dev` clean (a high `follow-redirects` advisory via axios was fixed with `npm audit fix`); full `npm audit` is also clean after the ESLint 10 move (§21). |
 
 **Not defended:** multi-user isolation, per-user audit trails, CSRF (not applicable: there are no cookies), and verification that a detected key is live (deliberately out of scope).
 
@@ -620,13 +636,13 @@ Verified: the image builds and runs as uid 10001, `/health` answers, a paste sca
 | `tests/test_api.py` | 13 | Full paste-scan lifecycle over HTTP (ASGI transport): scan, findings, filters, diff, all exports, stats, delete |
 | `tests/test_hardening.py` | 20 | No raw secret in 8 responses and exports; paste digest; interrupted scans and restored schedules; cron validation; zip bomb and member cap; placeholder edge case; escaped email |
 | `tests/test_inventory.py` | 26 | Fingerprints; ledger grouping and exposure; projects; triage persistence, bounds, expiry, legacy rows, rejection; trend; diff; alert selection; deduplicated stats; stable paths; symlinks; 5 MB cap; vendored dirs in history |
-| `tests/test_security.py` | 18 | Token on every router; public `/health`; client IP; sliding window; rate, concurrency, and schedule caps; additive upgrade (incl. oversized legacy rows); WebSocket auth via ASGI handshake (accept / `401`); demo-seeding safeguards |
+| `tests/test_security.py` | 27 | Token on every router; public `/health`; client IP and `CLIENT_IP_HEADER` (spoof-resistance, IPv6 /64, per-IP vs global 429 scope); sliding window; rate, concurrency, and schedule caps; additive upgrade (incl. oversized legacy rows); WebSocket auth via ASGI handshake (accept / `401`); demo-seeding safeguards |
 | `tests/test_cli.py` | 9 | History-only detection; baseline suppression; no secrets in baselines; `--fail-on`; SARIF only unbaselined; JSON per credential; exit 2; key-bound baselines; CLI/server fingerprint agreement; single-run `--sarif` |
 | `tests/test_risk.py` | 13 | Score bases, bonuses, cap, reasons |
 | `tests/test_sarif.py` | 9 | Structure, rule dedup, levels, fingerprints (incl. the credential fingerprint), empty doc |
 | `tests/test_remediation.py` | 13 | Env-var names, per-language replacements, patch hunks |
 | `tests/test_validation.py` | 9 | URL allow-list, paste size, cron, pagination |
-| **Backend total** | **130** | |
+| **Backend total** | **139** | |
 | `test_scanner.py` (root) | 19 | Legacy `scanner_core.py` module |
 
 The `client` fixture gives each test a fresh schema (`drop_all` + `init_db`), resets the rate limiter, and disposes the engine pool after each test; asyncpg connections are bound to the event loop that opened them. With `TEST_DATABASE_URL`, the same suite runs on Postgres. WebSocket tests drive the ASGI handshake on the test's own event loop: Starlette's `TestClient` would run the app on a second loop, which the asyncpg pool can't share. That was the cause of three Postgres-only failures, fixed in this release.
@@ -641,17 +657,19 @@ The `client` fixture gives each test a fresh schema (`drop_all` + `init_db`), re
 | Legacy suite | 19 passed |
 | Frontend `npm run lint` / `typecheck` / `build` | 0 problems / pass / pass |
 | `pip-audit -r backend/requirements.txt` | No known vulnerabilities |
-| `npm audit --omit=dev` | 0 vulnerabilities; full audit: 7 (Tailwind 3 build chain) |
+| `npm audit` (full, incl. dev) | 0 vulnerabilities |
 | Legacy-database upgrade on PostgreSQL with a 12 KB `source_ref` | Unguarded index fails (`ProgramLimitExceededError`); guarded upgrade completes and leaves data intact |
 | Docker image build + run; Compose stack through nginx | Verified (§16.2) |
 | Action scripts under `bash -eo pipefail` | Clean tree exit 0; new leak exit 1 with 1 SARIF result |
 | Browser checks (demo data) | Landing, overview, projects, ledger triage, scan report, exports, unlock/lock in private mode, rate-limit message, 375 px layout |
+| Oct 31 audit: backend suite on a rebuilt Python 3.11 venv | 132 passed (SQLite); `pip-audit` clean; frontend lint/typecheck/build pass after `npm audit fix` |
+| Oct 31 follow-up (commit `fe0a00c`): backend suite | 139 passed on SQLite and on PostgreSQL 18; legacy 19 passed; lint (ESLint 10) / typecheck / build pass; `npm audit` 0 |
+| Oct 31 follow-up: live per-IP limit | 10 scans with rotating spoofed `X-Forwarded-For` accepted, 11th and 12th `429` with `X-RateLimit-Scope: client`; test scans deleted; probe route returns 404 |
 | GitHub Actions CI (commit `7a8a228`) | All 4 jobs passed: backend 130 tests, legacy, frontend lint + typecheck + build, self-scan via the composite action with SARIF upload |
 | Production (Render + Vercel) | `/health` 3.0.0; live API, UI, WebSocket, triage, and export checks passed (§16.3) |
 
 ### 18.3 Not verified
 
-- `TRUSTED_PROXY_HOPS=1` on Render (whether the per-IP limit sees real client addresses).
 - Private mode and Neon Postgres on a hosted deployment (production runs the public SQLite demo).
 - Email delivery (SMTP was never configured during testing).
 - Private-repository scanning with a `GITHUB_TOKEN`.
@@ -666,9 +684,9 @@ The `client` fixture gives each test a fresh schema (`drop_all` + `init_db`), re
 
 **Live progress never updates, but scans complete.** The WebSocket is blocked, typically by a proxy without upgrade headers. The console falls back to polling, so this is cosmetic. Behind nginx, keep the `Upgrade`/`Connection` headers from `frontend/nginx.conf`.
 
-**`429 Scan limit reached`.** The per-IP window is full; wait for `Retry-After`, or raise `SCAN_RATE_LIMIT` on a private instance. If *every* user hits it at once behind a proxy, `TRUSTED_PROXY_HOPS` is probably `0`, so all requests appear to come from the proxy's address.
+**`429`.** Check `X-RateLimit-Scope`: `client` means your address used its window (wait for `Retry-After`, or raise `SCAN_RATE_LIMIT` on a private instance); `global` means the shared ceiling is used up. If *every* user gets `client` at once, requests are probably sharing a bucket: `CLIENT_IP_HEADER` is unset (all keyed on the proxy's address) or the edge isn't sending it (all keyed on `unknown`).
 
-**Verifying `TRUSTED_PROXY_HOPS` on Render.** Temporarily log `request.headers.get("x-forwarded-for")` and `request.client.host` in a route, make a request, and confirm that the entry `TRUSTED_PROXY_HOPS` positions from the right is your public IP. If Render (or Cloudflare in front of it) appends two entries, set the value to `2`.
+**Checking which header your host overwrites.** Temporarily add a route that returns `x-forwarded-for`, `cf-connecting-ip`, `true-client-ip` and `request.client.host`, call it with and without spoofed values of each, and trust only a header whose spoofed value does not come back. Remove the route afterwards. This is how Render's was established (§16.3).
 
 **Startup log: "Not indexing scans.source_ref".** The database has pre-2.1 paste rows with long `source_ref` values. Everything works; lookups by source are just unindexed. Deleting those old paste scans and restarting creates the index.
 
@@ -721,8 +739,9 @@ python cli.py baseline /tmp/cw-clean -o .cipherwatch-baseline.json
 - **Changing `FINGERPRINT_KEY` re-keys everything**; existing triage stops matching new scans.
 - **Detection ceiling.** Novel formats, or secrets split or obfuscated across lines, can be missed.
 - **Remediation patch** uses masked values and isn't guaranteed to `git apply`.
-- **Render specifics unverified** (`TRUSTED_PROXY_HOPS=1`, cold starts with this release).
-- **Build-tool advisories.** 7 `npm audit` advisories in Tailwind CSS 3's build-time dependencies (`braces`, `micromatch`, `chokidar`, `fast-glob`, `postcss-selector-parser`, `postcss-nested`, `tailwindcss`). None ship to the browser; clearing them needs a Tailwind 4 migration.
+- **Per-IP rate limit is evadable on Render** (measured, §16.3); the global ceiling bounds total load but one client can exhaust it.
+- **Public demo is writable by anyone** (delete scans, change triage, create schedules). Data is fake and reseeded on deploy; use `ACCESS_TOKEN` for real data.
+- **Build-tool advisories.** Cleared: ESLint 10 (flat config, `eslint.config.js`) with `minimatch` overridden to `>=11.0.1`, because ESLint's own dependency chain still ships `minimatch` 10 (a dev-only ReDoS). Remove the `overrides` entry once upstream updates. The React Compiler rules in `eslint-plugin-react-hooks` 7 are not enabled (they flag 23 existing patterns); only `rules-of-hooks` and `exhaustive-deps` are.
 - **Legacy module.** `scanner_core.py` and `test_scanner.py` remain but are unused by the product; a candidate for removal.
 
 ---

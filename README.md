@@ -177,7 +177,7 @@ Exit codes: `0` nothing new at or above `--fail-on`, `1` new credentials at or a
 | Control | Detail |
 |---|---|
 | **Two modes** | `ACCESS_TOKEN` unset: public demo mode, protected by abuse limits. Set: every `/api/v1` request needs `Authorization: Bearer <token>`, compared in constant time; failures get `401`. The console asks for the token once per browser session (optionally remembered on the device). The WebSocket sends it as a `Sec-WebSocket-Protocol` entry, so it never appears in URLs or access logs. `/health` is always public. |
-| **Abuse limits** | Per-client-IP sliding window on scan creation (default 10 per 10 minutes; `429` with `Retry-After`), a global ceiling across all clients (default 60 per window), a soft cap of 3 queued/running scans (scheduled runs included), and a cap of 25 schedules. The client IP is read from `X-Forwarded-For` only `TRUSTED_PROXY_HOPS` entries from the right, so a client can't spoof it by prepending addresses. **On Render this has been measured to fail** (see Limitations), so the global ceiling is what actually bounds anonymous load there. |
+| **Abuse limits** | Per-client-IP sliding window on scan creation (default 10 per 10 minutes; `429` with `Retry-After`), a global ceiling across all clients (default 60 per window), a soft cap of 3 queued/running scans (scheduled runs included), and a cap of 25 schedules. The client address comes from `CLIENT_IP_HEADER`, a header the edge overwrites (on Render, Cloudflare's `CF-Connecting-IP`, verified against the live service); a missing or malformed value shares one bucket instead of falling back to a spoofable source. A `429` says whether your address or the shared limit was hit. Skipped scheduled runs are counted in `/health`. |
 | **Untrusted repositories** | Archives stream to disk under a 100 MB cap. Zip-slip, uncompressed-size (500 MB), and member-count (50,000) checks run before extraction. Symlinks aren't followed, files over 5 MB aren't read, scanning runs in worker threads, and the Docker image runs as a non-root user. |
 | **No secret retention** | Only masked values and masked lines are stored; pasted text is never stored. Tests assert that no raw secret appears in any API response, export, or CLI baseline. |
 | **Data isolation** | Triage state is keyed by (project, fingerprint). A fingerprint that isn't in the project's findings is rejected with `404`; path segments and fingerprints are validated by pattern. |
@@ -197,7 +197,7 @@ A private workspace is single-tenant: everyone holding the token sees the same p
 | CI | GitHub Actions | The composite action needs only GitPython. |
 | Alerts | Any SMTP account (e.g. a Gmail app password) | Optional. |
 
-**Private workspace on Render:** set `ACCESS_TOKEN` (long random), `FINGERPRINT_KEY` (long random, then keep it stable; changing it re-keys every credential), `SEED_DEMO=0`, a Neon `DATABASE_URL`, and `CORS_ORIGINS` for your console's origin. `render.yaml` sets `TRUSTED_PROXY_HOPS=1`, which assumes Render's proxy appends exactly one `X-Forwarded-For` entry. That assumption hasn't been verified against a live deployment; confirm it after deploying (see [PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md#troubleshooting)).
+**Private workspace on Render:** set `ACCESS_TOKEN` (long random), `FINGERPRINT_KEY` (long random, then keep it stable; changing it re-keys every credential), `SEED_DEMO=0`, a Neon `DATABASE_URL`, and `CORS_ORIGINS` for your console's origin. `render.yaml` sets `CLIENT_IP_HEADER=cf-connecting-ip`, which Render's Cloudflare edge overwrites on every request (the app also defaults to it when `RENDER=true`). Don't use `X-Forwarded-For` on Render: clients can prepend entries and the number of proxies varies (see [PROJECT_DOCUMENTATION_CIpherWatch.md](PROJECT_DOCUMENTATION_CIpherWatch.md#troubleshooting)).
 
 ---
 
@@ -212,7 +212,8 @@ A private workspace is single-tenant: everyone holding the token sees the same p
 | `MAX_CONCURRENT_SCANS` | `3` | Queued + running scans (soft cap) |
 | `MAX_SCHEDULES` | `25` | Stored schedules |
 | `SCAN_GLOBAL_RATE_LIMIT` | `60` | Scan creations per window across all clients (backstop when client IPs can't be trusted) |
-| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the API |
+| `CLIENT_IP_HEADER` | _(unset)_ | Edge-written header holding the client address (`cf-connecting-ip` on Render; auto-set when `RENDER=true`) |
+| `TRUSTED_PROXY_HOPS` | `0` | Appending proxies in front of the API, for `X-Forwarded-For`; **not usable on Render** |
 | `CORS_ORIGINS` | localhost dev origins | Comma-separated console origins |
 | `GITHUB_TOKEN` | — | Raises the GitHub API limit from 60 to 5,000 requests/hour |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASSWORD` `SMTP_FROM` `ALERT_EMAIL` | — | Email alerts (optional) |
@@ -249,7 +250,7 @@ Interactive docs are served at `/docs`. In private mode every `/api/v1` route re
 ## Tests and checks
 
 ```bash
-cd backend && pytest tests/ -q          # 132 tests (SQLite)
+cd backend && pytest tests/ -q          # 139 tests (SQLite and PostgreSQL)
 TEST_DATABASE_URL=postgresql+asyncpg://user@host/cipherwatch_test pytest tests/ -q   # same suite on Postgres
 cd .. && pytest test_scanner.py -q      # 19 tests for the legacy scanner module
 cd frontend && npm run lint && npm run typecheck && npm run build
@@ -284,9 +285,9 @@ There is no labelled evaluation set large enough for precision/recall figures; `
 - **Project names are case-sensitive.** `github.com/Acme/API` and `github.com/acme/api` become two projects.
 - **Additive migrations only.** Startup adds missing columns and indexes; anything destructive would need a migration tool such as Alembic. Legacy rows from before 2.1 (paste content stored in `source_ref`) are left as they are.
 - **In-process limits.** Rate limits reset on restart and aren't shared across instances; the concurrency cap is checked before insert, so a simultaneous burst can briefly exceed it.
-- **Per-IP rate limit is evadable on Render.** Measured: a spoofed `X-Forwarded-For` defeats it with `TRUSTED_PROXY_HOPS=1`. The global ceiling still bounds total load, but one visitor can use up the global budget and temporarily block others. Fixing this properly needs the real header format from Render (log it once on a deployment).
+- **Rate limits are per process and per address.** They live in memory, so they reset on restart and aren't shared across instances. IPv6 clients are keyed by their /64. Visitors behind one NAT share a bucket, and an attacker with many addresses can still use the shared ceiling (default 60 scans per 10 minutes) to briefly block others.
 - **Public demo is writable by anyone.** In public mode any visitor can delete scans, change triage decisions, and create schedules. The demo data is fake and reseeded on every deploy; use `ACCESS_TOKEN` for anything real.
-- **Build-tool advisories.** `npm audit --omit=dev` (what ships to browsers) is clean. The 15 remaining moderate advisories are in the ESLint 8 dev toolchain (end-of-life); clearing them needs an ESLint 9+ migration.
+- **Build-tool advisories.** `npm audit` reports 0 vulnerabilities. ESLint 10's `minimatch` (a ReDoS advisory, dev-only) is pinned to `>=11.0.1` with an npm `overrides` entry; drop it once ESLint's own dependency catches up.
 
 ---
 
