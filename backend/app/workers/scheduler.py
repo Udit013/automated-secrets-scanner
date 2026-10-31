@@ -33,9 +33,22 @@ async def _run_scheduled_scan(schedule_id: str, source_type: str, source_ref: st
     from ..models import ScanSchedule, Scan, utcnow_naive
     from ..routers.scans import _run_scan
 
+    from sqlalchemy import func
+    from ..config import settings
+
     async with AsyncSessionLocal() as db:
         schedule = await db.get(ScanSchedule, schedule_id)
         if not schedule or not schedule.enabled:
+            return
+
+        # Scheduled runs honour the same concurrency cap as manual scans;
+        # otherwise many schedules sharing a cron minute would all start at
+        # once. A skipped run is logged and the next cron fire tries again.
+        active = (
+            await db.execute(select(func.count(Scan.id)).where(Scan.status.in_(("queued", "running"))))
+        ).scalar_one()
+        if active >= settings.MAX_CONCURRENT_SCANS:
+            logger.warning("Skipping scheduled scan %s: %d scans already running", schedule_id, active)
             return
 
         scan = Scan(

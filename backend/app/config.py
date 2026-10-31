@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     SCAN_RATE_LIMIT: int = 10            # new scans per client per window
     SCAN_RATE_WINDOW_SECONDS: int = 600
     MAX_CONCURRENT_SCANS: int = 3        # protects a 512 MB free-tier instance
+    # Ceiling across ALL clients, a backstop for the per-IP limit: on hosts where
+    # the client address can't be trusted (X-Forwarded-For spoofable) it still
+    # bounds how much work anonymous visitors can queue.
+    SCAN_GLOBAL_RATE_LIMIT: int = 60
     MAX_SCHEDULES: int = 25
     # Number of reverse proxies in front of the app (Render: 1). Used to read
     # the real client IP from X-Forwarded-For; 0 trusts only the socket peer.

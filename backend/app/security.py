@@ -101,6 +101,7 @@ class SlidingWindowLimiter:
 
 
 scan_limiter = SlidingWindowLimiter(settings.SCAN_RATE_LIMIT, settings.SCAN_RATE_WINDOW_SECONDS)
+global_scan_limiter = SlidingWindowLimiter(settings.SCAN_GLOBAL_RATE_LIMIT, settings.SCAN_RATE_WINDOW_SECONDS)
 
 
 def _wait(seconds: int) -> str:
@@ -109,6 +110,9 @@ def _wait(seconds: int) -> str:
 
 async def limit_scan_creation(conn: HTTPConnection) -> None:
     retry_after = scan_limiter.check(client_ip(conn))
+    if not retry_after:
+        # Only requests the per-IP limit allowed count against the global one.
+        retry_after = global_scan_limiter.check("*")
     if retry_after:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,

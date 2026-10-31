@@ -34,9 +34,10 @@ from app.main import app
 @pytest_asyncio.fixture()
 async def client():
     """HTTP client bound to the app with a fresh database and limits per test."""
-    from app.security import scan_limiter
+    from app.security import global_scan_limiter, scan_limiter
 
     scan_limiter.reset()
+    global_scan_limiter.reset()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await init_db()

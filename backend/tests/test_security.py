@@ -181,3 +181,29 @@ class TestDemoSeeding:
         import seed_demo
         await seed_demo.seed()
         assert (await client.get("/api/v1/scans", headers={"Authorization": f"Bearer {private_mode}"})).json() == []
+
+
+class TestGlobalAndScheduledLimits:
+    async def test_global_limit_holds_when_every_request_claims_a_new_ip(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "TRUSTED_PROXY_HOPS", 1)
+        monkeypatch.setattr(security.global_scan_limiter, "limit", 3)
+        codes = [
+            (await client.post("/api/v1/scans", json=PASTE, headers={"X-Forwarded-For": f"10.0.0.{i}"})).status_code
+            for i in range(5)
+        ]
+        assert codes == [202, 202, 202, 429, 429]      # spoofed addresses don't evade the ceiling
+
+    async def test_scheduled_runs_respect_the_concurrency_cap(self, client, monkeypatch):
+        from app.models import ScanSchedule
+        from app.workers import scheduler
+        async with AsyncSessionLocal() as db:
+            db.add(ScanSchedule(id="s1", name="n", source_type="github", source_ref="https://github.com/a/b",
+                                cron_expression="0 * * * *", enabled=True))
+            for _ in range(settings.MAX_CONCURRENT_SCANS):
+                db.add(Scan(source_type="paste", source_ref="paste:x", status="running"))
+            await db.commit()
+        ran = []
+        async def fake_run(scan_id, paste_content=None): ran.append(scan_id)
+        monkeypatch.setattr("app.routers.scans._run_scan", fake_run)
+        await scheduler._run_scheduled_scan("s1", "github", "https://github.com/a/b")
+        assert ran == []                                # skipped: already at the cap

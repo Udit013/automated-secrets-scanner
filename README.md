@@ -177,7 +177,7 @@ Exit codes: `0` nothing new at or above `--fail-on`, `1` new credentials at or a
 | Control | Detail |
 |---|---|
 | **Two modes** | `ACCESS_TOKEN` unset: public demo mode, protected by abuse limits. Set: every `/api/v1` request needs `Authorization: Bearer <token>`, compared in constant time; failures get `401`. The console asks for the token once per browser session (optionally remembered on the device). The WebSocket sends it as a `Sec-WebSocket-Protocol` entry, so it never appears in URLs or access logs. `/health` is always public. |
-| **Abuse limits** | Per-client-IP sliding window on scan creation (default 10 per 10 minutes; `429` with `Retry-After`), a soft cap of 3 queued/running scans, and a cap of 25 schedules. The client IP is read from `X-Forwarded-For` only `TRUSTED_PROXY_HOPS` entries from the right, so a client can't spoof it by prepending addresses. |
+| **Abuse limits** | Per-client-IP sliding window on scan creation (default 10 per 10 minutes; `429` with `Retry-After`), a global ceiling across all clients (default 60 per window), a soft cap of 3 queued/running scans (scheduled runs included), and a cap of 25 schedules. The client IP is read from `X-Forwarded-For` only `TRUSTED_PROXY_HOPS` entries from the right, so a client can't spoof it by prepending addresses. **On Render this has been measured to fail** (see Limitations), so the global ceiling is what actually bounds anonymous load there. |
 | **Untrusted repositories** | Archives stream to disk under a 100 MB cap. Zip-slip, uncompressed-size (500 MB), and member-count (50,000) checks run before extraction. Symlinks aren't followed, files over 5 MB aren't read, scanning runs in worker threads, and the Docker image runs as a non-root user. |
 | **No secret retention** | Only masked values and masked lines are stored; pasted text is never stored. Tests assert that no raw secret appears in any API response, export, or CLI baseline. |
 | **Data isolation** | Triage state is keyed by (project, fingerprint). A fingerprint that isn't in the project's findings is rejected with `404`; path segments and fingerprints are validated by pattern. |
@@ -211,6 +211,7 @@ A private workspace is single-tenant: everyone holding the token sees the same p
 | `SCAN_RATE_LIMIT` / `SCAN_RATE_WINDOW_SECONDS` | `10` / `600` | Scan creations per client IP per window |
 | `MAX_CONCURRENT_SCANS` | `3` | Queued + running scans (soft cap) |
 | `MAX_SCHEDULES` | `25` | Stored schedules |
+| `SCAN_GLOBAL_RATE_LIMIT` | `60` | Scan creations per window across all clients (backstop when client IPs can't be trusted) |
 | `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the API |
 | `CORS_ORIGINS` | localhost dev origins | Comma-separated console origins |
 | `GITHUB_TOKEN` | — | Raises the GitHub API limit from 60 to 5,000 requests/hour |
@@ -248,7 +249,7 @@ Interactive docs are served at `/docs`. In private mode every `/api/v1` route re
 ## Tests and checks
 
 ```bash
-cd backend && pytest tests/ -q          # 130 tests (SQLite)
+cd backend && pytest tests/ -q          # 132 tests (SQLite)
 TEST_DATABASE_URL=postgresql+asyncpg://user@host/cipherwatch_test pytest tests/ -q   # same suite on Postgres
 cd .. && pytest test_scanner.py -q      # 19 tests for the legacy scanner module
 cd frontend && npm run lint && npm run typecheck && npm run build
@@ -283,8 +284,9 @@ There is no labelled evaluation set large enough for precision/recall figures; `
 - **Project names are case-sensitive.** `github.com/Acme/API` and `github.com/acme/api` become two projects.
 - **Additive migrations only.** Startup adds missing columns and indexes; anything destructive would need a migration tool such as Alembic. Legacy rows from before 2.1 (paste content stored in `source_ref`) are left as they are.
 - **In-process limits.** Rate limits reset on restart and aren't shared across instances; the concurrency cap is checked before insert, so a simultaneous burst can briefly exceed it.
-- **Render proxy assumption.** `TRUSTED_PROXY_HOPS=1` hasn't been verified on a live Render deployment.
-- **Build-tool advisories.** `npm audit` reports 7 advisories in Tailwind CSS 3's build-time dependencies; `npm audit --omit=dev` (what ships to browsers) is clean. Clearing them needs a Tailwind 4 migration.
+- **Per-IP rate limit is evadable on Render.** Measured: a spoofed `X-Forwarded-For` defeats it with `TRUSTED_PROXY_HOPS=1`. The global ceiling still bounds total load, but one visitor can use up the global budget and temporarily block others. Fixing this properly needs the real header format from Render (log it once on a deployment).
+- **Public demo is writable by anyone.** In public mode any visitor can delete scans, change triage decisions, and create schedules. The demo data is fake and reseeded on every deploy; use `ACCESS_TOKEN` for anything real.
+- **Build-tool advisories.** `npm audit --omit=dev` (what ships to browsers) is clean. The 15 remaining moderate advisories are in the ESLint 8 dev toolchain (end-of-life); clearing them needs an ESLint 9+ migration.
 
 ---
 
