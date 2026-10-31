@@ -72,3 +72,14 @@ async def health():
     async with AsyncSessionLocal() as db:
         demo = await db.get(AppSetting, "demo_seeded") is not None
     return {"status": "ok", "version": APP_VERSION, "auth_required": auth_required(), "demo": demo}
+
+
+# TEMPORARY-DIAG: remove after the proxy header probe.
+from starlette.requests import Request as _Req  # noqa: E402
+
+
+@app.get("/_diag/ip")
+async def _diag_ip(request: _Req):
+    names = ("x-forwarded-for", "true-client-ip", "cf-connecting-ip", "x-real-ip", "forwarded", "x-forwarded-proto", "cf-ipcountry")
+    return {"peer": request.client.host if request.client else None,
+            **{n: request.headers.get(n) for n in names}}
