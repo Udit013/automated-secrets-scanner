@@ -55,6 +55,44 @@ class TestClientIp:
         assert security.client_ip(self._Conn("6.6.6.6, 203.0.113.7")) == "203.0.113.7"
 
 
+class TestClientIpHeader:
+    """CLIENT_IP_HEADER: trust one edge-written header, never fall back to spoofable ones."""
+
+    class _Conn:
+        def __init__(self, headers, peer="1.2.3.4"):
+            self.headers = headers
+            self.client = type("C", (), {"host": peer})()
+
+    @pytest.fixture(autouse=True)
+    def _header(self, monkeypatch):
+        monkeypatch.setattr(settings, "CLIENT_IP_HEADER", "cf-connecting-ip")
+
+    def test_uses_the_edge_header(self):
+        conn = self._Conn({"cf-connecting-ip": "203.0.113.7", "x-forwarded-for": "6.6.6.6, 203.0.113.7, 10.0.0.1"})
+        assert security.client_ip(conn) == "203.0.113.7"
+
+    @pytest.mark.parametrize("headers", [{}, {"cf-connecting-ip": "not-an-ip"}, {"x-forwarded-for": "6.6.6.6"}])
+    def test_missing_or_malformed_header_shares_one_bucket(self, headers):
+        # Falling back to XFF or the peer would let a client pick its own key.
+        assert security.client_ip(self._Conn(headers)) == "unknown"
+
+    def test_ipv6_clients_share_their_64(self):
+        a = security.client_ip(self._Conn({"cf-connecting-ip": "2001:db8:1:2::1"}))
+        b = security.client_ip(self._Conn({"cf-connecting-ip": "2001:db8:1:2:ffff::9"}))
+        assert a == b == "2001:db8:1:2::/64"
+
+    async def test_per_ip_limit_holds_through_the_app_and_names_itself(self, client, monkeypatch):
+        monkeypatch.setattr(settings, "SCAN_RATE_LIMIT", 2)
+        monkeypatch.setattr(security.scan_limiter, "limit", 2)
+        def post(ip, xff):
+            return client.post("/api/v1/scans", json=PASTE, headers={"CF-Connecting-IP": ip, "X-Forwarded-For": xff})
+        # Rotating X-Forwarded-For does not help; the edge header is the key.
+        assert [(await post("198.51.100.1", f"9.9.9.{i}")).status_code for i in range(3)] == [202, 202, 429]
+        r = await post("198.51.100.1", "9.9.9.9")
+        assert r.headers["x-ratelimit-scope"] == "client" and "from your address" in r.json()["detail"]
+        assert (await post("198.51.100.2", "9.9.9.1")).status_code == 202   # another client is unaffected
+
+
 class TestLimits:
     def test_sliding_window_frees_slots_over_time(self):
         limiter = security.SlidingWindowLimiter(limit=2, window_seconds=60)
@@ -193,9 +231,17 @@ class TestGlobalAndScheduledLimits:
         ]
         assert codes == [202, 202, 202, 429, 429]      # spoofed addresses don't evade the ceiling
 
+    async def test_global_limit_response_says_it_is_shared(self, client, monkeypatch):
+        monkeypatch.setattr(security.global_scan_limiter, "limit", 1)
+        await client.post("/api/v1/scans", json=PASTE)
+        r = await client.post("/api/v1/scans", json=PASTE)
+        assert r.status_code == 429 and r.headers["x-ratelimit-scope"] == "global"
+        assert "across all visitors" in r.json()["detail"]
+
     async def test_scheduled_runs_respect_the_concurrency_cap(self, client, monkeypatch):
         from app.models import ScanSchedule
         from app.workers import scheduler
+        scheduler.skipped.update(count=0, last_at=None)
         async with AsyncSessionLocal() as db:
             db.add(ScanSchedule(id="s1", name="n", source_type="github", source_ref="https://github.com/a/b",
                                 cron_expression="0 * * * *", enabled=True))
@@ -207,3 +253,5 @@ class TestGlobalAndScheduledLimits:
         monkeypatch.setattr("app.routers.scans._run_scan", fake_run)
         await scheduler._run_scheduled_scan("s1", "github", "https://github.com/a/b")
         assert ran == []                                # skipped: already at the cap
+        assert scheduler.skipped["count"] == 1          # and the skip is counted...
+        assert (await client.get("/health")).json()["scheduled_runs_skipped"] == 1   # ...and visible

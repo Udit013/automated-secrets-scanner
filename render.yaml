@@ -22,10 +22,11 @@ services:
         sync: false
       - key: FINGERPRINT_KEY
         sync: false
-      # Render terminates TLS at one proxy that appends the client address
-      # to X-Forwarded-For; rate limits key on that address.
-      - key: TRUSTED_PROXY_HOPS
-        value: "1"
+      # Render sits behind Cloudflare, which overwrites CF-Connecting-IP with the
+      # real client address (verified against the live service; X-Forwarded-For
+      # is NOT usable: clients can prepend to it and the proxy count varies).
+      - key: CLIENT_IP_HEADER
+        value: cf-connecting-ip
       - key: CORS_ORIGINS
         value: https://cipherwatch-web.vercel.app,https://automated-secrets-scanner.vercel.app
       - key: GITHUB_TOKEN

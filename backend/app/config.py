@@ -1,5 +1,7 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
 from typing import List
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -36,8 +38,17 @@ class Settings(BaseSettings):
     # bounds how much work anonymous visitors can queue.
     SCAN_GLOBAL_RATE_LIMIT: int = 60
     MAX_SCHEDULES: int = 25
-    # Number of reverse proxies in front of the app (Render: 1). Used to read
-    # the real client IP from X-Forwarded-For; 0 trusts only the socket peer.
+    # Where the client address comes from. Only ever set this to a header your
+    # edge overwrites on every request, never one a client can supply.
+    #   CLIENT_IP_HEADER   a single-address header written by the edge
+    #                      (Render sits behind Cloudflare: cf-connecting-ip).
+    #                      Missing or malformed -> the request shares one
+    #                      "unknown" bucket rather than falling back to
+    #                      something spoofable.
+    #   TRUSTED_PROXY_HOPS proxies that each append to X-Forwarded-For; the
+    #                      client is the entry that many from the right.
+    # With neither set the socket peer is used.
+    CLIENT_IP_HEADER: str = ""
     TRUSTED_PROXY_HOPS: int = 0
 
     @property
@@ -48,3 +59,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Render always fronts services with Cloudflare, which overwrites CF-Connecting-IP
+# (measured against the live service), so that is the default there.
+if not settings.CLIENT_IP_HEADER and os.environ.get("RENDER") == "true" and not settings.TRUSTED_PROXY_HOPS:
+    settings.CLIENT_IP_HEADER = "cf-connecting-ip"

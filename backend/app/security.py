@@ -7,6 +7,7 @@ Two deployment modes, chosen by ACCESS_TOKEN:
 """
 
 import hmac
+import ipaddress
 import time
 from collections import deque
 
@@ -53,13 +54,30 @@ async def require_access(conn: HTTPConnection) -> None:
         )
 
 
+def _normalize_ip(value: str) -> str | None:
+    """A canonical address, or None. IPv6 collapses to its /64 (one subscriber's whole range)."""
+    try:
+        ip = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address):
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False).network_address) + "/64"
+    return str(ip)
+
+
 def client_ip(conn: HTTPConnection) -> str:
     """
-    The client address, read from X-Forwarded-For only as far as the number
-    of trusted proxies allows. Each proxy appends the address it saw, so the
-    entry `hops` from the right is the last one a trusted proxy added — any
-    values a client prepends itself are ignored.
+    The address rate limits key on. Preference order:
+    1. CLIENT_IP_HEADER, a header the edge overwrites. If it is missing or not
+       an IP the request goes to a shared "unknown" bucket; falling back to
+       X-Forwarded-For or the peer would hand the spoofable value back.
+    2. X-Forwarded-For, read TRUSTED_PROXY_HOPS entries from the right: each
+       trusted proxy appends the address it saw, so anything a client prepends
+       sits further left and is ignored.
+    3. The socket peer.
     """
+    if settings.CLIENT_IP_HEADER:
+        return _normalize_ip(conn.headers.get(settings.CLIENT_IP_HEADER, "")) or "unknown"
     hops = settings.TRUSTED_PROXY_HOPS
     forwarded = conn.headers.get("x-forwarded-for", "")
     if hops > 0 and forwarded:
@@ -109,14 +127,21 @@ def _wait(seconds: int) -> str:
 
 
 async def limit_scan_creation(conn: HTTPConnection) -> None:
+    window = f"{settings.SCAN_RATE_WINDOW_SECONDS // 60} minutes"
     retry_after = scan_limiter.check(client_ip(conn))
-    if not retry_after:
-        # Only requests the per-IP limit allowed count against the global one.
+    if retry_after:
+        detail = (f"Scan limit reached: {settings.SCAN_RATE_LIMIT} per {window} from your address. "
+                  f"Try again in {_wait(retry_after)}.")
+        scope = "client"
+    else:
+        # Only requests the per-IP limit allowed count against the shared one.
         retry_after = global_scan_limiter.check("*")
+        detail = (f"The demo is busy: it accepts {settings.SCAN_GLOBAL_RATE_LIMIT} scans per {window} "
+                  f"across all visitors, and that is used up. Try again in {_wait(retry_after)}.")
+        scope = "global"
     if retry_after:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
-            f"Scan limit reached ({settings.SCAN_RATE_LIMIT} per "
-            f"{settings.SCAN_RATE_WINDOW_SECONDS // 60} minutes). Try again in {_wait(retry_after)}.",
-            headers={"Retry-After": str(retry_after)},
+            detail,
+            headers={"Retry-After": str(retry_after), "X-RateLimit-Scope": scope},
         )

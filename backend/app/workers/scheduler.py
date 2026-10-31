@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 # schema validator uses — so a schedule means the same moment on any host.
 _scheduler = AsyncIOScheduler(timezone=timezone.utc)
 
+# Scheduled runs dropped because the concurrency cap was full. In-memory, so it
+# resets on restart; /health reports it so skips are visible without log access.
+skipped = {"count": 0, "last_at": None}
+
 
 def start_scheduler():
     if not _scheduler.running:
@@ -48,7 +52,10 @@ async def _run_scheduled_scan(schedule_id: str, source_type: str, source_ref: st
             await db.execute(select(func.count(Scan.id)).where(Scan.status.in_(("queued", "running"))))
         ).scalar_one()
         if active >= settings.MAX_CONCURRENT_SCANS:
-            logger.warning("Skipping scheduled scan %s: %d scans already running", schedule_id, active)
+            skipped["count"] += 1
+            skipped["last_at"] = datetime.now(timezone.utc).isoformat()
+            logger.warning("Skipping scheduled scan %s: %d scans already running (%d skipped since start)",
+                           schedule_id, active, skipped["count"])
             return
 
         scan = Scan(
